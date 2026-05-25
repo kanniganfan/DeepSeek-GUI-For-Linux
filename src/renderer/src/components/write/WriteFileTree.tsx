@@ -43,7 +43,12 @@ function relativeDisplayPath(root: string, target: string): string {
   return basenameFromPath(normalizedTarget)
 }
 
+function isAssistantInternalDirectory(entry: WorkspaceEntry): boolean {
+  return entry.type === 'directory' && entry.name === '.deepseek'
+}
+
 function isWriteDocument(entry: WorkspaceEntry): boolean {
+  if (isAssistantInternalDirectory(entry)) return false
   return entry.type === 'directory' || ['.md', '.markdown', '.mdx'].includes(entry.ext.toLowerCase())
 }
 
