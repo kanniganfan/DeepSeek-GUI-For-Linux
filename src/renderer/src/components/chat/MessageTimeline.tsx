@@ -14,6 +14,7 @@ import {
   FolderOpen,
   Lightbulb,
   Loader2,
+  MessageSquareQuote,
   Palette,
   PencilLine,
   Terminal,
@@ -36,6 +37,11 @@ import {
 } from '../../lib/diff-stats'
 import { useDeferredRender } from '../../hooks/use-deferred-render'
 import { useChatStore } from '../../store/chat-store'
+import {
+  parseWritePromptForDisplay,
+  type WritePromptDisplay,
+  type WritePromptDisplayQuote
+} from '../../write/quoted-selection'
 import { DiffView } from '../DiffView'
 
 const LazyStreamdownAssistant = lazy(() =>
@@ -1653,6 +1659,113 @@ function ModelMetaTag({
   )
 }
 
+function writePromptMetaSummary(
+  display: WritePromptDisplay,
+  t: (key: string, opts?: Record<string, unknown>) => string
+): string {
+  const parts: string[] = []
+  if (display.quotes.length > 0) {
+    parts.push(t('writePromptReferencesCount', { count: display.quotes.length }))
+  }
+  if (display.context) {
+    parts.push(t('writePromptContextShort'))
+  }
+  return parts.join(' · ')
+}
+
+function WritePromptMetaDisclosure({
+  display,
+  expanded,
+  onToggle
+}: {
+  display: WritePromptDisplay
+  expanded: boolean
+  onToggle: () => void
+}): ReactElement | null {
+  const { t } = useTranslation('common')
+  const summary = writePromptMetaSummary(display, t)
+  if (!summary) return null
+
+  return (
+    <div className="mt-2 border-t border-black/5 pt-2 dark:border-white/10">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="group flex w-full min-w-0 items-center gap-1.5 rounded-lg py-0.5 text-left text-[12px] font-medium text-ds-muted transition hover:text-ds-ink"
+      >
+        <MessageSquareQuote className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.85} />
+        <span className="min-w-0 flex-1 truncate">{summary}</span>
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-55" strokeWidth={1.85} />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-45 transition group-hover:opacity-70" strokeWidth={1.85} />
+        )}
+      </button>
+
+      {expanded ? (
+        <div className="mt-2 flex flex-col gap-2">
+          {display.context ? (
+            <div className="rounded-xl border border-black/5 bg-white/55 px-3 py-2 text-[12px] font-normal leading-5 text-ds-muted shadow-sm dark:border-white/10 dark:bg-white/6">
+              <div className="font-medium text-ds-ink">{t('writePromptContextLabel')}</div>
+              {display.context.activeFile ? (
+                <div className="mt-1 truncate">
+                  <span className="text-ds-faint">{t('writePromptActiveFile')} </span>
+                  <span className="font-mono text-ds-muted">{display.context.activeFile}</span>
+                </div>
+              ) : null}
+              {display.context.workspaceRoot ? (
+                <div className="mt-0.5 truncate" title={display.context.workspaceRoot}>
+                  <span className="text-ds-faint">{t('writePromptWorkspace')} </span>
+                  <span className="font-mono text-ds-muted">{display.context.workspaceRoot}</span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {display.quotes.map((quote, index) => (
+            <WritePromptQuoteCard key={`${quote.sourceTitle}-${index}`} quote={quote} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function WritePromptQuoteCard({ quote }: { quote: WritePromptDisplayQuote }): ReactElement {
+  const { t } = useTranslation('common')
+  const lineLabel =
+    quote.lineStart != null && quote.lineEnd != null
+      ? t('writePromptReferenceLines', { start: quote.lineStart, end: quote.lineEnd })
+      : null
+
+  return (
+    <figure className="rounded-xl border border-accent/15 bg-accent/[0.055] px-3 py-2.5 text-left shadow-sm">
+      <figcaption className="flex min-w-0 items-center gap-2 text-[12px] leading-5">
+        <MessageSquareQuote className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.9} />
+        <span className="min-w-0 flex-1 truncate font-medium text-ds-ink">
+          {quote.sourceTitle || t('writePromptReference')}
+        </span>
+        {lineLabel ? (
+          <span className="shrink-0 rounded-full bg-white/65 px-2 py-0.5 font-mono text-[11px] text-ds-faint dark:bg-white/8">
+            {lineLabel}
+          </span>
+        ) : null}
+      </figcaption>
+      <blockquote className="mt-2 max-h-36 overflow-auto border-l-2 border-accent/35 pl-3 text-[12.5px] font-normal leading-6 text-ds-muted">
+        <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+          {quote.text}
+        </div>
+      </blockquote>
+      {quote.sourceFilePath ? (
+        <div className="mt-2 truncate font-mono text-[11px] font-normal text-ds-faint" title={quote.sourceFilePath}>
+          {quote.sourceFilePath}
+        </div>
+      ) : null}
+    </figure>
+  )
+}
+
 /**
  * User message bubble with hover affordance to rewind/edit. Click the rewind
  * pill, the bubble flips into a textarea, and Resend submits an edited
@@ -1666,10 +1779,18 @@ function UserMessageBubble({
 }): ReactElement {
   const { t } = useTranslation('common')
   const busy = useChatStore((s) => s.busy)
+  const route = useChatStore((s) => s.route)
   const rewindAndResend = useChatStore((s) => s.rewindAndResend)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(block.text)
+  const [writeMetaOpen, setWriteMetaOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const parsedWritePrompt = useMemo(() => {
+    if (route !== 'write') return null
+    const parsed = parseWritePromptForDisplay(block.text)
+    return parsed?.userInput.trim() ? parsed : null
+  }, [block.text, route])
+  const displayText = parsedWritePrompt?.userInput ?? block.text
 
   useEffect(() => {
     if (!editing) return
@@ -1682,6 +1803,10 @@ function UserMessageBubble({
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 360)}px`
   }, [editing])
+
+  useEffect(() => {
+    setWriteMetaOpen(false)
+  }, [block.id])
 
   const startEdit = (): void => {
     if (busy) return
@@ -1758,13 +1883,20 @@ function UserMessageBubble({
     <div className="ds-user-message group relative">
       <div className="ds-user-message-bubble min-w-0">
         <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-left">
-          {block.text}
+          {displayText}
         </div>
+        {parsedWritePrompt ? (
+          <WritePromptMetaDisclosure
+            display={parsedWritePrompt}
+            expanded={writeMetaOpen}
+            onToggle={() => setWriteMetaOpen((value) => !value)}
+          />
+        ) : null}
       </div>
       <div className="mt-2 flex min-w-0 items-center justify-between gap-3 text-ds-faint opacity-90 transition group-hover:opacity-100">
         <ModelMetaTag label={block.modelLabel} className="flex-1 justify-start text-left" />
         <div className="flex items-center justify-end gap-3">
-          <CopyFeedbackButton text={block.text} iconOnly />
+          <CopyFeedbackButton text={displayText} iconOnly />
           <button
             type="button"
             onClick={startEdit}

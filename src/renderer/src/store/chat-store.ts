@@ -3,6 +3,7 @@ import type {
   NormalizedThread,
   ThreadDeltaEvent,
   ThreadEventSink,
+  ToolEventPayload,
   ToolBlock
 } from '../agent/types'
 import { getProvider } from '../agent/registry'
@@ -55,6 +56,17 @@ import {
   upsertUserBlock
 } from './chat-store-runtime-helpers'
 import {
+  activeWriteThreadForWorkspace,
+  forgetWriteThread,
+  isWriteThreadId,
+  markWriteThread,
+  pruneWriteThreadRegistry,
+  readWriteThreadRegistry,
+  saveWriteThreadRegistry,
+  writeThreadBelongsToWorkspace
+} from '../write/write-thread-registry'
+import { useWriteWorkspaceStore } from '../write/write-workspace-store'
+import {
   armBusyWatchdog as armBusyWatchdogImpl,
   clearBusyWatchdog,
   resetBusyRecoveryAttempts,
@@ -89,6 +101,21 @@ const COMPLETION_NOTIFICATION_DEDUPE_LIMIT = 200
 const completionNotificationKeys: string[] = []
 const completionNotificationKeySet = new Set<string>()
 const watchCompletionNotificationKeys = new Map<string, string>()
+const WRITE_THREAD_TITLE = 'Write Assistant'
+
+async function readActiveWriteWorkspace(fallbackWorkspaceRoot: string): Promise<string> {
+  try {
+    const settings = await window.dsGui.getSettings()
+    return normalizeWorkspaceRoot(
+      settings.write.activeWorkspaceRoot ||
+      settings.write.defaultWorkspaceRoot ||
+      settings.write.workspaces[0] ||
+      fallbackWorkspaceRoot
+    )
+  } catch {
+    return normalizeWorkspaceRoot(fallbackWorkspaceRoot)
+  }
+}
 
 function runtimeErrorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? '')
@@ -190,11 +217,58 @@ function looksLikeActiveTurnError(error: unknown): boolean {
 
 function isCodeThread(thread: NormalizedThread): boolean {
   const workspace = normalizeWorkspaceRoot(thread.workspace)
-  return Boolean(workspace) && !isInternalTemporaryWorkspace(thread.workspace) && !isClawWorkspacePath(thread.workspace)
+  return Boolean(workspace) &&
+    thread.archived !== true &&
+    !isInternalTemporaryWorkspace(thread.workspace) &&
+    !isClawWorkspacePath(thread.workspace) &&
+    !isWriteThreadId(thread.id)
 }
 
 function latestThread(threads: NormalizedThread[]): NormalizedThread | null {
   return [...threads].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] ?? null
+}
+
+function normalizeFilePathForMatch(path?: string | null): string {
+  return path?.trim().replace(/\\/g, '/').replace(/\/+$/, '') ?? ''
+}
+
+function isAbsoluteFilePath(path: string): boolean {
+  return path.startsWith('/') || /^[A-Za-z]:\//.test(path)
+}
+
+function resolveWriteToolFilePath(filePath: string | undefined, workspaceRoot: string): string {
+  const raw = normalizeFilePathForMatch(filePath)
+  if (!raw) return ''
+  if (isAbsoluteFilePath(raw)) return raw
+  return `${normalizeFilePathForMatch(workspaceRoot)}/${raw.replace(/^\.?\//, '')}`
+}
+
+function notifyWriteWorkspaceFileRefresh(
+  get: () => ChatState,
+  event?: Pick<ToolEventPayload, 'filePath' | 'status' | 'toolKind'>
+): void {
+  if (get().route !== 'write') return
+  if (event && (event.toolKind !== 'file_change' || event.status !== 'success')) return
+
+  const writeState = useWriteWorkspaceStore.getState()
+  const workspaceRoot = normalizeFilePathForMatch(writeState.workspaceRoot)
+  const activeFilePath = normalizeFilePathForMatch(writeState.activeFilePath)
+  if (!workspaceRoot || !activeFilePath) return
+
+  const candidatePath = resolveWriteToolFilePath(event?.filePath, workspaceRoot)
+  const hasCandidate = candidatePath.length > 0
+  const candidateInWorkspace = hasCandidate
+    ? candidatePath === workspaceRoot || candidatePath.startsWith(`${workspaceRoot}/`)
+    : true
+  if (!candidateInWorkspace) return
+
+  void useWriteWorkspaceStore.getState().refreshWorkspace(workspaceRoot)
+
+  if (hasCandidate && candidatePath !== activeFilePath) return
+  void useWriteWorkspaceStore.getState().syncActiveFileFromDisk(workspaceRoot, {
+    path: activeFilePath,
+    animate: true
+  })
 }
 
 function armBusyWatchdog(
@@ -349,7 +423,8 @@ function buildThreadEventSink(
             : {})
         }
       }),
-    onTool: (ev) =>
+    onTool: (ev) => {
+      notifyWriteWorkspaceFileRefresh(get, ev)
       set((s) => {
         resetBusyRecoveryAttempts()
         // Restore busy state on tool events (same reasoning as onDelta).
@@ -401,7 +476,8 @@ function buildThreadEventSink(
           blocks: [...baseBlocks, block],
           error: s.error === i18n.t('common:runtimeStreamRecovering') ? null : s.error
         }
-      }),
+      })
+    },
     onApproval: (req) =>
       set((s) => {
         resetBusyRecoveryAttempts()
@@ -520,6 +596,7 @@ function buildThreadEventSink(
         )
       }
       notifyTurnComplete(completedThreadId, completedState, completedKey)
+      notifyWriteWorkspaceFileRefresh(get)
       syncTurnCompletionPoll(set, get)
       void get().refreshThreads()
       void get().drainQueuedMessages()
@@ -556,6 +633,7 @@ function buildThreadEventSink(
 
 export const useChatStore = create<ChatState>((set, get) => ({
   route: 'chat',
+  settingsReturnRoute: 'chat',
   pluginHostRoute: 'chat',
   settingsSection: 'general',
   initialSetupOpen: false,
@@ -565,6 +643,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   workspaceLabel: i18n.t('common:workingDirectory'),
   runtimeConnection: 'idle',
   threads: [],
+  threadSearch: '',
+  showArchivedThreads: false,
   activeThreadId: null,
   blocks: [],
   liveReasoning: '',
@@ -657,6 +737,138 @@ export const useChatStore = create<ChatState>((set, get) => ({
       watchTurnCompletion: nextWatch
     })
     syncTurnCompletionPoll(set, get)
+  },
+
+  openWrite: async () => {
+    const state = get()
+    const selectedWorkspace = await readActiveWriteWorkspace(state.workspaceRoot)
+    const registry = pruneWriteThreadRegistry(
+      state.threads.filter((thread) => thread.archived !== true),
+      readWriteThreadRegistry()
+    )
+    saveWriteThreadRegistry(registry)
+    const activeThread = state.activeThreadId
+      ? state.threads.find((thread) => thread.id === state.activeThreadId) ?? null
+      : null
+    if (
+      activeThread &&
+      activeThread.archived !== true &&
+      selectedWorkspace &&
+      writeThreadBelongsToWorkspace(activeThread, selectedWorkspace, registry)
+    ) {
+      set({ route: 'write' })
+      return
+    }
+
+    const target = activeWriteThreadForWorkspace(
+      selectedWorkspace,
+      state.threads.filter((thread) => thread.archived !== true),
+      registry
+    )
+
+    set({ route: 'write' })
+    if (target && state.runtimeConnection === 'ready') {
+      await get().selectThread(target.id)
+      return
+    }
+
+    sseAbort?.abort()
+    sseAbort = null
+    clearBusyWatchdog()
+    const nextWatch = { ...state.watchTurnCompletion }
+    if (state.activeThreadId && state.busy) {
+      nextWatch[state.activeThreadId] = true
+      watchCompletionNotificationKeys.set(state.activeThreadId, `watch:${state.activeThreadId}:${Date.now()}`)
+    }
+    set({
+      ...clearedThreadSelection(),
+      route: 'write',
+      watchTurnCompletion: nextWatch
+    })
+    syncTurnCompletionPoll(set, get)
+  },
+
+  ensureWriteThreadForWorkspace: async (workspaceRoot) => {
+    const state = get()
+    const targetWorkspace = normalizeWorkspaceRoot(workspaceRoot) || (await readActiveWriteWorkspace(state.workspaceRoot))
+    if (!targetWorkspace) {
+      set({ error: i18n.t('common:workspaceRequiredToCreateThread') })
+      return null
+    }
+    if (state.runtimeConnection !== 'ready') {
+      set({ error: i18n.t('common:runtimeActionNeedsConnection') })
+      return null
+    }
+
+    const registry = pruneWriteThreadRegistry(state.threads, readWriteThreadRegistry())
+    saveWriteThreadRegistry(registry)
+    const activeThread = state.activeThreadId
+      ? state.threads.find((thread) => thread.id === state.activeThreadId) ?? null
+      : null
+    if (activeThread && writeThreadBelongsToWorkspace(activeThread, targetWorkspace, registry)) {
+      set({ route: 'write', error: null })
+      return activeThread.id
+    }
+
+    const existing = activeWriteThreadForWorkspace(targetWorkspace, state.threads, registry)
+    if (existing) {
+      set({ route: 'write' })
+      await get().selectThread(existing.id)
+      return existing.id
+    }
+
+    return get().createWriteThread(targetWorkspace)
+  },
+
+  createWriteThread: async (workspaceRoot) => {
+    const targetWorkspace = normalizeWorkspaceRoot(workspaceRoot) || (await readActiveWriteWorkspace(get().workspaceRoot))
+    if (!targetWorkspace) {
+      set({ error: i18n.t('common:workspaceRequiredToCreateThread') })
+      return null
+    }
+    if (get().runtimeConnection !== 'ready') {
+      set({ error: i18n.t('common:runtimeActionNeedsConnection') })
+      return null
+    }
+    try {
+      const p = getProvider(get().providerId)
+      const thread = await p.createThread({
+        workspace: targetWorkspace,
+        title: WRITE_THREAD_TITLE,
+        mode: 'agent'
+      })
+      saveWriteThreadRegistry(markWriteThread(targetWorkspace, thread.id))
+      set((s) => ({
+        route: 'write',
+        threads: s.threads.some((item) => item.id === thread.id) ? s.threads : [thread, ...s.threads],
+        error: null
+      }))
+      await get().refreshThreads()
+      await get().selectThread(thread.id)
+      return thread.id
+    } catch (e) {
+      set({
+        error: formatRuntimeError(e),
+        ...(shouldOpenSettingsForError(e)
+          ? { route: 'settings' as const, settingsSection: 'agents' as const }
+          : {})
+      })
+      return null
+    }
+  },
+
+  selectWriteThread: async (threadId, workspaceRoot) => {
+    const targetId = threadId.trim()
+    if (!targetId) return
+    const thread = get().threads.find((item) => item.id === targetId)
+    const targetWorkspace = normalizeWorkspaceRoot(workspaceRoot) ||
+      normalizeWorkspaceRoot(thread?.workspace) ||
+      (await readActiveWriteWorkspace(get().workspaceRoot))
+    if (targetWorkspace) {
+      saveWriteThreadRegistry(markWriteThread(targetWorkspace, targetId))
+    }
+    set({ route: 'write' })
+    await get().selectThread(targetId)
   },
 
   probeRuntime: async (mode = 'user') => {
@@ -792,6 +1004,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   chooseWorkspace: async ({ createThreadAfter = false } = {}) => {
     try {
+      const wasWriteRoute = get().route === 'write'
       if (typeof window.dsGui === 'undefined' || typeof window.dsGui.pickWorkspaceDirectory !== 'function') {
         throw new Error(i18n.t('common:workspacePickerUnavailable'))
       }
@@ -811,7 +1024,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       })
       await get().refreshThreads()
       if (workspaceRoot) {
+        if (wasWriteRoute) {
+          await get().openWrite()
+          return workspaceRoot
+        }
         const workspaceThreads = get().threads
+          .filter(isCodeThread)
           .filter((thread) => threadBelongsToWorkspace(thread, workspaceRoot))
           .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
 
@@ -922,11 +1140,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const { providerId } = get()
       const p = getProvider(providerId)
-      const rawThreads = await p.listThreads()
+      let rawThreads: NormalizedThread[]
+      try {
+        rawThreads = await p.listThreads({ limit: 200, includeArchived: true })
+      } catch {
+        rawThreads = await p.listThreads()
+      }
       const threads = rawThreads.map((thread) => ({
         ...thread,
         workspace: normalizeWorkspaceRoot(thread.workspace)
       }))
+      saveWriteThreadRegistry(
+        pruneWriteThreadRegistry(
+          threads.filter((thread) => thread.archived !== true),
+          readWriteThreadRegistry()
+        )
+      )
       const activeThreadId = get().activeThreadId
       const shouldClearSelection =
         activeThreadId != null && !threads.some((thread) => thread.id === activeThreadId)
@@ -968,6 +1197,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  setThreadSearch: (query) => {
+    set({ threadSearch: query })
+  },
+
+  setShowArchivedThreads: (show) => {
+    set({ showArchivedThreads: show })
+    if (show && get().runtimeConnection === 'ready') {
+      void get().refreshThreads()
+    }
+  },
+
   createThread: async (options = {}) => {
     if (get().runtimeConnection !== 'ready') {
       set({ error: i18n.t('common:runtimeActionNeedsConnection') })
@@ -990,7 +1230,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         await get().chooseWorkspace({ createThreadAfter: true })
         return
       }
-      const reusableThreadId = await findReusableEmptyThreadId(get(), p, workspaceRoot)
+      const reusableThreadId = await findReusableEmptyThreadId(get(), p, workspaceRoot, isCodeThread)
       if (reusableThreadId) {
         if (get().activeThreadId !== reusableThreadId) {
           await get().selectThread(reusableThreadId)
@@ -1177,6 +1417,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return false
     }
     const p = getProvider(providerId)
+    if (get().route === 'write') {
+      const writeThreadId = await get().ensureWriteThreadForWorkspace()
+      if (!writeThreadId) return false
+    }
     const hasPendingActiveTurn = get().blocks.some(hasPendingRuntimeWork)
     if (get().busy || hasPendingActiveTurn) {
       const now = Date.now()
@@ -1185,8 +1429,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? get().threads.find((thread) => thread.id === activeThreadId)
         : undefined
       const clawModel = activeClawChannel(get())?.model
-      const composerModel = get().route === 'claw' && clawModel ? clawModel : get().composerModel.trim()
-      const userModelChip = optimisticUserModelLabel(composerModel, threadSnap?.model)
+      const overrideModel = overrides?.model?.trim()
+      const composerModel =
+        overrideModel ?? (get().route === 'claw' && clawModel ? clawModel : get().composerModel.trim())
+      const userModelChip =
+        overrides?.modelLabel ?? optimisticUserModelLabel(composerModel, threadSnap?.model)
       set((s) => ({
         queuedMessages: [
           ...s.queuedMessages,
@@ -1221,9 +1468,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       shouldAutoTitleThread(activeThread)
     const threadSnap = get().threads.find((thread) => thread.id === activeThreadId)
     const clawModel = activeClawChannel(get())?.model
-    const composerModel = queued?.model ?? (get().route === 'claw' && clawModel ? clawModel : get().composerModel.trim())
+    const overrideModel = overrides?.model?.trim()
+    const composerModel =
+      queued?.model ?? overrideModel ?? (get().route === 'claw' && clawModel ? clawModel : get().composerModel.trim())
     const userModelChip =
-      queued?.modelLabel ?? optimisticUserModelLabel(composerModel, threadSnap?.model)
+      queued?.modelLabel ?? overrides?.modelLabel ?? optimisticUserModelLabel(composerModel, threadSnap?.model)
     const previousBlocks = get().blocks
     const previousActiveThreadId = get().activeThreadId
     const previousLastSeq = get().lastSeq
@@ -1273,7 +1522,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           })
           return false
         }
-        const reusableThreadId = await findReusableEmptyThreadId(get(), p, workspaceRoot)
+        const reusableThreadId = await findReusableEmptyThreadId(get(), p, workspaceRoot, isCodeThread)
         const reusableThread = reusableThreadId
           ? get().threads.find((thread) => thread.id === reusableThreadId) ?? null
           : null
@@ -1479,6 +1728,146 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  archiveThread: async (threadId, archived) => {
+    const targetId = threadId.trim()
+    if (!targetId) return
+    if (get().runtimeConnection !== 'ready') {
+      set({ error: i18n.t('common:runtimeActionNeedsConnection') })
+      return
+    }
+    const { providerId, activeThreadId } = get()
+    const p = getProvider(providerId)
+    const archivingActive = archived && activeThreadId === targetId
+    try {
+      if (typeof p.archiveThread === 'function') {
+        await p.archiveThread(targetId, archived)
+      } else if (archived) {
+        await p.deleteThread(targetId)
+      } else {
+        throw new Error(i18n.t('common:runtimeFeatureUnsupported'))
+      }
+      if (archivingActive) {
+        sseAbort?.abort()
+        sseAbort = null
+        clearBusyWatchdog()
+      }
+      set((s) => {
+        const w = { ...s.watchTurnCompletion }
+        const u = { ...s.unreadThreadIds }
+        if (archived) {
+          delete w[targetId]
+          delete u[targetId]
+          clearWatchedCompletionNotification(targetId)
+        }
+        return {
+          threads: s.threads.map((thread) =>
+            thread.id === targetId ? { ...thread, archived } : thread
+          ),
+          watchTurnCompletion: w,
+          unreadThreadIds: u,
+          ...(archivingActive ? clearedThreadSelection() : {}),
+          error: null
+        }
+      })
+      await get().refreshThreads()
+    } catch (e) {
+      set({
+        error: formatRuntimeError(e),
+        ...(shouldOpenSettingsForError(e)
+          ? { route: 'settings' as const, settingsSection: 'agents' as const }
+          : {})
+      })
+    }
+  },
+
+  compactActiveThread: async (reason) => {
+    const { activeThreadId, providerId, busy } = get()
+    if (!activeThreadId) return
+    if (busy) {
+      set({ error: i18n.t('common:threadActionBusy') })
+      return
+    }
+    if (get().runtimeConnection !== 'ready') {
+      set({ error: i18n.t('common:runtimeActionNeedsConnection') })
+      return
+    }
+    const p = getProvider(providerId)
+    if (typeof p.compactThread !== 'function') {
+      set({ error: i18n.t('common:runtimeFeatureUnsupported') })
+      return
+    }
+    try {
+      await p.compactThread(activeThreadId, reason)
+      await get().refreshThreads()
+      await get().selectThread(activeThreadId)
+    } catch (e) {
+      set({
+        error: formatRuntimeError(e),
+        ...(shouldOpenSettingsForError(e)
+          ? { route: 'settings' as const, settingsSection: 'agents' as const }
+          : {})
+      })
+    }
+  },
+
+  forkActiveThread: async () => {
+    const { activeThreadId, providerId, busy } = get()
+    if (!activeThreadId) return
+    if (busy) {
+      set({ error: i18n.t('common:threadActionBusy') })
+      return
+    }
+    if (get().runtimeConnection !== 'ready') {
+      set({ error: i18n.t('common:runtimeActionNeedsConnection') })
+      return
+    }
+    const p = getProvider(providerId)
+    if (typeof p.forkThread !== 'function') {
+      set({ error: i18n.t('common:runtimeFeatureUnsupported') })
+      return
+    }
+    try {
+      const forked = await p.forkThread(activeThreadId)
+      await get().refreshThreads()
+      await get().selectThread(forked.id)
+    } catch (e) {
+      set({
+        error: formatRuntimeError(e),
+        ...(shouldOpenSettingsForError(e)
+          ? { route: 'settings' as const, settingsSection: 'agents' as const }
+          : {})
+      })
+    }
+  },
+
+  resumeSessionIntoThread: async (sessionId, options) => {
+    const id = sessionId.trim()
+    if (!id) return null
+    if (get().runtimeConnection !== 'ready') {
+      set({ error: i18n.t('common:runtimeActionNeedsConnection') })
+      return null
+    }
+    const p = getProvider(get().providerId)
+    if (typeof p.resumeSession !== 'function') {
+      set({ error: i18n.t('common:runtimeFeatureUnsupported') })
+      return null
+    }
+    try {
+      const result = await p.resumeSession(id, options)
+      await get().refreshThreads()
+      await get().selectThread(result.threadId)
+      return result.threadId
+    } catch (e) {
+      set({
+        error: formatRuntimeError(e),
+        ...(shouldOpenSettingsForError(e)
+          ? { route: 'settings' as const, settingsSection: 'agents' as const }
+          : {})
+      })
+      return null
+    }
+  },
+
   deleteThread: async (threadId) => {
     const targetId = threadId.trim()
     if (!targetId) return
@@ -1491,6 +1880,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const deletingActive = activeThreadId === targetId
     try {
       await p.deleteThread(targetId)
+      saveWriteThreadRegistry(forgetWriteThread(targetId))
       if (deletingActive) {
         sseAbort?.abort()
         sseAbort = null

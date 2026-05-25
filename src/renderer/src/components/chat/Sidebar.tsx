@@ -2,10 +2,8 @@ import type { ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  Bot,
   ChevronRight,
   Command,
-  Code2,
   LayoutGrid,
   Plus,
   Settings
@@ -21,20 +19,27 @@ import {
 import type { ClawImDialogMode } from './SidebarClawDialogHelpers'
 import { ClawAddImDialog } from './SidebarClawDialog'
 import { SidebarProjectsSection } from './SidebarProjectsSection'
+import { WorkspaceModeTabs } from './WorkspaceModeTabs'
 
 type Props = {
   threads: NormalizedThread[]
   activeThreadId: string | null
-  activeView: 'chat' | 'claw'
+  activeView: 'chat' | 'write' | 'claw'
   pluginsActive: boolean
   runtimeReady: boolean
+  threadSearch: string
+  showArchivedThreads: boolean
+  onThreadSearchChange: (query: string) => void
+  onShowArchivedThreadsChange: (show: boolean) => void
   onSelectThread: (id: string) => void
   onDeleteThread: (id: string) => Promise<void>
+  onRestoreThread: (id: string) => Promise<void>
   onNewChat: () => void
   onNewChatInWorkspace: (workspaceRoot: string) => void
   onOpenSettings: (section?: SettingsRouteSection) => void
   onOpenPlugins: () => void
   onCodeOpen: () => void
+  onWriteOpen: () => void
   onClawOpen: () => void
 }
 
@@ -44,13 +49,19 @@ export function Sidebar({
   activeView,
   pluginsActive,
   runtimeReady,
+  threadSearch,
+  showArchivedThreads,
+  onThreadSearchChange,
+  onShowArchivedThreadsChange,
   onSelectThread,
   onDeleteThread,
+  onRestoreThread,
   onNewChat,
   onNewChatInWorkspace,
   onOpenSettings,
   onOpenPlugins,
   onCodeOpen,
+  onWriteOpen,
   onClawOpen
 }: Props): ReactElement {
   const { t, i18n } = useTranslation('common')
@@ -102,42 +113,12 @@ export function Sidebar({
       </div>
 
       <div className="ds-no-drag flex flex-col px-1">
-        <div
-          role="tablist"
-          aria-label={`${t('code')} / ${t('claw')}`}
-          className="mb-4 rounded-[12px] border border-ds-border-muted/45 bg-ds-subtle/72 p-0.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.52)] backdrop-blur dark:bg-white/[0.045] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
-        >
-          <div className="grid h-[34px] grid-cols-2 gap-0.5">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeView === 'chat'}
-              onClick={onCodeOpen}
-              className={`inline-flex min-w-0 items-center justify-center gap-1.5 rounded-[9px] px-2.5 text-[13px] font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-accent/35 ${
-                activeView === 'chat'
-                  ? 'bg-white text-ds-ink shadow-[0_2px_8px_rgba(15,23,42,0.10)] ring-1 ring-ds-border-muted dark:bg-white/[0.13] dark:text-white dark:ring-white/10'
-                  : 'text-ds-faint hover:bg-white/45 hover:text-ds-muted dark:hover:bg-white/[0.07]'
-              }`}
-            >
-              <Code2 className="h-3.5 w-3.5 shrink-0" strokeWidth={1.9} />
-              <span className="truncate">{t('code')}</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeView === 'claw'}
-              onClick={onClawOpen}
-              className={`inline-flex min-w-0 items-center justify-center gap-1.5 rounded-[9px] px-2.5 text-[13px] font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-accent/35 ${
-                activeView === 'claw'
-                  ? 'bg-white text-ds-ink shadow-[0_2px_8px_rgba(15,23,42,0.10)] ring-1 ring-ds-border-muted dark:bg-white/[0.13] dark:text-white dark:ring-white/10'
-                  : 'text-ds-faint hover:bg-white/45 hover:text-ds-muted dark:hover:bg-white/[0.07]'
-              }`}
-            >
-              <Bot className="h-3.5 w-3.5 shrink-0" strokeWidth={1.9} />
-              <span className="truncate">{t('claw')}</span>
-            </button>
-          </div>
-        </div>
+        <WorkspaceModeTabs
+          activeView={activeView}
+          onCodeOpen={onCodeOpen}
+          onWriteOpen={onWriteOpen}
+          onClawOpen={onClawOpen}
+        />
 
         {activeView !== 'claw' ? (
         <SidebarLink
@@ -178,6 +159,8 @@ export function Sidebar({
         activeView={activeView}
         activeThreadId={activeThreadId}
         runtimeReady={runtimeReady}
+        searchQuery={threadSearch}
+        showArchived={showArchivedThreads}
         workspaceRoot={workspaceRoot}
         busy={busy}
         watchTurnCompletion={watchTurnCompletion}
@@ -188,6 +171,9 @@ export function Sidebar({
         onCreateThreadInWorkspace={onNewChatInWorkspace}
         onSelectThread={onSelectThread}
         onDeleteThread={onDeleteThread}
+        onRestoreThread={onRestoreThread}
+        onSearchQueryChange={onThreadSearchChange}
+        onShowArchivedChange={onShowArchivedThreadsChange}
         t={t}
       />
       )}

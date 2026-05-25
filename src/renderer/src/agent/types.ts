@@ -28,9 +28,21 @@ export type NormalizedThread = {
   mode: string
   workspace?: string
   status?: string
+  archived?: boolean
+  preview?: string
+  latestTurnId?: string
+  latestTurnStatus?: string
 }
 
 export type RuntimeConnectionStatus = 'idle' | 'checking' | 'ready' | 'offline'
+
+export type ThreadListOptions = {
+  limit?: number
+  search?: string
+  includeArchived?: boolean
+  archivedOnly?: boolean
+  summary?: boolean
+}
 
 export type ToolBlock = {
   kind: 'tool'
@@ -139,7 +151,7 @@ export interface AgentProvider {
     attachFiles: boolean
   }
   connect(): Promise<void>
-  listThreads(): Promise<NormalizedThread[]>
+  listThreads(options?: ThreadListOptions): Promise<NormalizedThread[]>
   createThread(input: { workspace?: string; title?: string; mode?: string }): Promise<NormalizedThread>
   getThreadDetail(threadId: string): Promise<{
     blocks: ChatBlock[]
@@ -156,7 +168,14 @@ export interface AgentProvider {
   steerUserMessage?(threadId: string, turnId: string, text: string): Promise<void>
   interruptTurn(threadId: string, turnId: string): Promise<void>
   renameThread(threadId: string, title: string): Promise<void>
+  archiveThread?(threadId: string, archived: boolean): Promise<void>
   deleteThread(threadId: string): Promise<void>
+  compactThread?(threadId: string, reason?: string): Promise<void>
+  forkThread?(threadId: string): Promise<NormalizedThread>
+  resumeSession?(
+    sessionId: string,
+    options?: { model?: string; mode?: string }
+  ): Promise<{ threadId: string; sessionId: string }>
   subscribeThreadEvents(
     threadId: string,
     sinceSeq: number,

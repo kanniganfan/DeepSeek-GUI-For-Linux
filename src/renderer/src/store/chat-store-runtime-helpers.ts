@@ -1,5 +1,6 @@
 import type {
   ChatBlock,
+  NormalizedThread,
   UserMessageEventPayload
 } from '../agent/types'
 import { normalizeWorkspaceRoot } from '../lib/workspace-path'
@@ -134,7 +135,8 @@ export function clearedThreadSelection(): Pick<
 export async function findReusableEmptyThreadId(
   state: ChatState,
   provider: ThreadDetailProviderLike,
-  workspaceRoot: string
+  workspaceRoot: string,
+  isReusableThread: (thread: NormalizedThread) => boolean = () => true
 ): Promise<string | null> {
   const normalizedWorkspace = normalizeWorkspaceRoot(workspaceRoot)
   if (!normalizedWorkspace) return null
@@ -144,6 +146,7 @@ export async function findReusableEmptyThreadId(
     : null
   if (
     activeThread &&
+    isReusableThread(activeThread) &&
     normalizeWorkspaceRoot(activeThread.workspace) === normalizedWorkspace &&
     !threadHasUserMessage(state.blocks)
   ) {
@@ -154,6 +157,7 @@ export async function findReusableEmptyThreadId(
     .filter(
       (thread) =>
         thread.id !== activeThread?.id &&
+        isReusableThread(thread) &&
         normalizeWorkspaceRoot(thread.workspace) === normalizedWorkspace
     )
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))

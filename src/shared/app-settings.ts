@@ -17,6 +17,13 @@ export type ClawModel = 'auto' | 'deepseek-v4-pro' | 'deepseek-v4-flash'
 export const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com/beta'
 export const DEFAULT_CLAW_MODEL = 'auto'
 export const CLAW_MODEL_IDS = ['auto', 'deepseek-v4-pro', 'deepseek-v4-flash'] as const
+export const DEFAULT_WRITE_WORKSPACE_ROOT = '~/.deepseekgui/write_workspace'
+export const DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL = 'https://api.deepseek.com/beta'
+export const DEFAULT_WRITE_INLINE_COMPLETION_MODEL = 'deepseek-v4-flash'
+export const LEGACY_WRITE_INLINE_COMPLETION_MODEL = 'deepseek-v4-pro'
+export const DEFAULT_WRITE_INLINE_COMPLETION_DEBOUNCE_MS = 650
+export const DEFAULT_WRITE_INLINE_COMPLETION_MIN_ACCEPT_SCORE = 0.52
+export const DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS = 96
 
 export type DeepseekSettingsV1 = {
   binaryPath: string
@@ -147,11 +154,31 @@ export type ClawSettingsV1 = {
   tasks: ClawTaskV1[]
 }
 
+export type WriteInlineCompletionSettingsV1 = {
+  enabled: boolean
+  baseUrl: string
+  model: string
+  debounceMs: number
+  minAcceptScore: number
+  maxTokens: number
+}
+
+export type WriteSettingsV1 = {
+  defaultWorkspaceRoot: string
+  activeWorkspaceRoot: string
+  workspaces: string[]
+  inlineCompletion: WriteInlineCompletionSettingsV1
+}
+
 export type ClawSettingsPatchV1 = Partial<Omit<ClawSettingsV1, 'skills' | 'im' | 'channels' | 'tasks'>> & {
   skills?: Partial<ClawSkillSettingsV1>
   im?: Partial<ClawImSettingsV1>
   channels?: Array<Partial<ClawImChannelV1>>
   tasks?: Array<Partial<ClawTaskV1>>
+}
+
+export type WriteSettingsPatchV1 = Partial<Omit<WriteSettingsV1, 'inlineCompletion'>> & {
+  inlineCompletion?: Partial<WriteInlineCompletionSettingsV1>
 }
 
 export type ClawRunResult =
@@ -183,16 +210,18 @@ export type AppSettingsV1 = {
   workspaceRoot: string
   log: LogConfigV1
   notifications: NotificationConfigV1
+  write: WriteSettingsV1
   claw: ClawSettingsV1
   guiUpdate: GuiUpdateConfigV1
 }
 
 export type AppSettingsPatch = Partial<
-  Omit<AppSettingsV1, 'deepseek' | 'log' | 'notifications' | 'claw' | 'guiUpdate'>
+  Omit<AppSettingsV1, 'deepseek' | 'log' | 'notifications' | 'write' | 'claw' | 'guiUpdate'>
 > & {
   deepseek?: Partial<DeepseekSettingsV1>
   log?: Partial<LogConfigV1>
   notifications?: Partial<NotificationConfigV1>
+  write?: WriteSettingsPatchV1
   claw?: ClawSettingsPatchV1
   guiUpdate?: Partial<GuiUpdateConfigV1>
 }
@@ -561,9 +590,103 @@ export function mergeClawSettings(
   })
 }
 
+export function defaultWriteSettings(): WriteSettingsV1 {
+  return {
+    defaultWorkspaceRoot: DEFAULT_WRITE_WORKSPACE_ROOT,
+    activeWorkspaceRoot: DEFAULT_WRITE_WORKSPACE_ROOT,
+    workspaces: [DEFAULT_WRITE_WORKSPACE_ROOT],
+    inlineCompletion: {
+      enabled: true,
+      baseUrl: DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL,
+      model: DEFAULT_WRITE_INLINE_COMPLETION_MODEL,
+      debounceMs: DEFAULT_WRITE_INLINE_COMPLETION_DEBOUNCE_MS,
+      minAcceptScore: DEFAULT_WRITE_INLINE_COMPLETION_MIN_ACCEPT_SCORE,
+      maxTokens: DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS
+    }
+  }
+}
+
+function normalizeWriteInlineCompletionSettings(
+  input: Partial<WriteInlineCompletionSettingsV1> | undefined
+): WriteInlineCompletionSettingsV1 {
+  const defaults = defaultWriteSettings().inlineCompletion
+  const debounceMs = Number(input?.debounceMs)
+  const minAcceptScore = Number(input?.minAcceptScore)
+  const maxTokens = Number(input?.maxTokens)
+  return {
+    enabled: input?.enabled !== false,
+    baseUrl:
+      typeof input?.baseUrl === 'string' && input.baseUrl.trim()
+        ? input.baseUrl.trim()
+        : defaults.baseUrl,
+    model:
+      typeof input?.model === 'string' && input.model.trim()
+        ? normalizeWriteInlineCompletionModel(input.model)
+        : defaults.model,
+    debounceMs:
+      Number.isFinite(debounceMs)
+        ? Math.max(150, Math.min(5_000, Math.round(debounceMs)))
+        : defaults.debounceMs,
+    minAcceptScore:
+      Number.isFinite(minAcceptScore)
+        ? Math.max(0.1, Math.min(0.95, minAcceptScore))
+        : defaults.minAcceptScore,
+    maxTokens:
+      Number.isFinite(maxTokens)
+        ? Math.max(16, Math.min(512, Math.round(maxTokens)))
+        : defaults.maxTokens
+  }
+}
+
+export function normalizeWriteInlineCompletionModel(value: unknown): string {
+  const trimmed = typeof value === 'string' ? value.trim() : ''
+  if (!trimmed || trimmed === 'auto') return DEFAULT_WRITE_INLINE_COMPLETION_MODEL
+  if (trimmed === LEGACY_WRITE_INLINE_COMPLETION_MODEL) return DEFAULT_WRITE_INLINE_COMPLETION_MODEL
+  return trimmed
+}
+
+export function normalizeWriteSettings(input: WriteSettingsPatchV1 | undefined): WriteSettingsV1 {
+  const defaults = defaultWriteSettings()
+  const source = input ?? {}
+  const defaultWorkspaceRoot =
+    typeof source.defaultWorkspaceRoot === 'string' && source.defaultWorkspaceRoot.trim()
+      ? source.defaultWorkspaceRoot.trim()
+      : defaults.defaultWorkspaceRoot
+  const activeWorkspaceRoot =
+    typeof source.activeWorkspaceRoot === 'string' && source.activeWorkspaceRoot.trim()
+      ? source.activeWorkspaceRoot.trim()
+      : defaultWorkspaceRoot
+  const workspaces = compactStrings([
+    defaultWorkspaceRoot,
+    activeWorkspaceRoot,
+    ...(Array.isArray(source.workspaces) ? source.workspaces : [])
+  ])
+  return {
+    defaultWorkspaceRoot,
+    activeWorkspaceRoot,
+    workspaces: workspaces.length > 0 ? workspaces : [defaultWorkspaceRoot],
+    inlineCompletion: normalizeWriteInlineCompletionSettings(source.inlineCompletion)
+  }
+}
+
+export function mergeWriteSettings(
+  current: WriteSettingsV1,
+  patch: WriteSettingsPatchV1 | undefined
+): WriteSettingsV1 {
+  return normalizeWriteSettings({
+    ...current,
+    ...(patch ?? {}),
+    inlineCompletion: {
+      ...current.inlineCompletion,
+      ...(patch?.inlineCompletion ?? {})
+    }
+  })
+}
+
 export function normalizeAppSettings(settings: AppSettingsV1): AppSettingsV1 {
   const maybeSettings = settings as AppSettingsV1 & {
     notifications?: Partial<NotificationConfigV1>
+    write?: WriteSettingsPatchV1
     claw?: ClawSettingsPatchV1
     guiUpdate?: Partial<GuiUpdateConfigV1>
   }
@@ -576,6 +699,7 @@ export function normalizeAppSettings(settings: AppSettingsV1): AppSettingsV1 {
     notifications: {
       turnComplete: maybeSettings.notifications?.turnComplete !== false
     },
+    write: normalizeWriteSettings(maybeSettings.write),
     claw: normalizeClawSettings(maybeSettings.claw),
     guiUpdate: {
       channel: normalizeGuiUpdateChannel(

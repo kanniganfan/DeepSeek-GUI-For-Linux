@@ -15,6 +15,42 @@ describe('JsonSettingsStore', () => {
     expect(loaded.guiUpdate.channel).toBe(DEFAULT_GUI_UPDATE_CHANNEL)
   })
 
+  it('creates a default write workspace with welcome.md', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
+
+    const store = new JsonSettingsStore(userDataDir)
+    const loaded = await store.load()
+
+    expect(loaded.write.defaultWorkspaceRoot).toContain('.deepseekgui')
+    expect(loaded.write.workspaces).toContain(loaded.write.defaultWorkspaceRoot)
+    expect(loaded.write.inlineCompletion.enabled).toBe(true)
+    expect(loaded.write.inlineCompletion.baseUrl).toBe('https://api.deepseek.com/beta')
+    expect(loaded.write.inlineCompletion.model).toBe('deepseek-v4-flash')
+    expect(await readFile(join(loaded.write.defaultWorkspaceRoot, 'welcome.md'), 'utf8')).toContain('Welcome to Write')
+  })
+
+  it('migrates the legacy write completion default to flash', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
+
+    await writeFile(
+      join(userDataDir, 'deepseek-gui-settings.json'),
+      JSON.stringify({
+        version: 1,
+        write: {
+          inlineCompletion: {
+            model: 'deepseek-v4-pro'
+          }
+        }
+      }),
+      'utf8'
+    )
+
+    const store = new JsonSettingsStore(userDataDir)
+    const loaded = await store.load()
+
+    expect(loaded.write.inlineCompletion.model).toBe('deepseek-v4-flash')
+  })
+
   it('preserves deepseek.autoStart=false when loading saved settings', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
     const workspaceRoot = join(userDataDir, 'workspace')
