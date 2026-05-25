@@ -1,6 +1,10 @@
+export type WriteInlineCompletionMode = 'short' | 'long'
+
 export type WriteInlineCompletionRequest = {
   prefix: string
   suffix: string
+  mode?: WriteInlineCompletionMode
+  workspaceRoot?: string
   currentFilePath?: string
   cursor: {
     line: number
@@ -44,5 +48,6 @@ export type WriteInlineCompletionResult =
       ok: true
       completion: string
       model: string
+      mode?: WriteInlineCompletionMode
     }
   | { ok: false; message: string }

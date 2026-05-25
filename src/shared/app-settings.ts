@@ -20,10 +20,13 @@ export const CLAW_MODEL_IDS = ['auto', 'deepseek-v4-pro', 'deepseek-v4-flash'] a
 export const DEFAULT_WRITE_WORKSPACE_ROOT = '~/.deepseekgui/write_workspace'
 export const DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL = 'https://api.deepseek.com/beta'
 export const DEFAULT_WRITE_INLINE_COMPLETION_MODEL = 'deepseek-v4-flash'
-export const LEGACY_WRITE_INLINE_COMPLETION_MODEL = 'deepseek-v4-pro'
+export const WRITE_INLINE_COMPLETION_MODEL_IDS = ['deepseek-v4-pro', 'deepseek-v4-flash'] as const
 export const DEFAULT_WRITE_INLINE_COMPLETION_DEBOUNCE_MS = 650
 export const DEFAULT_WRITE_INLINE_COMPLETION_MIN_ACCEPT_SCORE = 0.52
 export const DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS = 96
+export const DEFAULT_WRITE_INLINE_LONG_COMPLETION_DEBOUNCE_MS = 2_800
+export const DEFAULT_WRITE_INLINE_LONG_COMPLETION_MIN_ACCEPT_SCORE = 0.36
+export const DEFAULT_WRITE_INLINE_LONG_COMPLETION_MAX_TOKENS = 256
 
 export type DeepseekSettingsV1 = {
   binaryPath: string
@@ -156,11 +159,16 @@ export type ClawSettingsV1 = {
 
 export type WriteInlineCompletionSettingsV1 = {
   enabled: boolean
+  retrievalEnabled: boolean
+  longCompletionEnabled: boolean
   baseUrl: string
   model: string
   debounceMs: number
+  longDebounceMs: number
   minAcceptScore: number
+  longMinAcceptScore: number
   maxTokens: number
+  longMaxTokens: number
 }
 
 export type WriteSettingsV1 = {
@@ -597,11 +605,16 @@ export function defaultWriteSettings(): WriteSettingsV1 {
     workspaces: [DEFAULT_WRITE_WORKSPACE_ROOT],
     inlineCompletion: {
       enabled: true,
+      retrievalEnabled: true,
+      longCompletionEnabled: true,
       baseUrl: DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL,
       model: DEFAULT_WRITE_INLINE_COMPLETION_MODEL,
       debounceMs: DEFAULT_WRITE_INLINE_COMPLETION_DEBOUNCE_MS,
+      longDebounceMs: DEFAULT_WRITE_INLINE_LONG_COMPLETION_DEBOUNCE_MS,
       minAcceptScore: DEFAULT_WRITE_INLINE_COMPLETION_MIN_ACCEPT_SCORE,
-      maxTokens: DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS
+      longMinAcceptScore: DEFAULT_WRITE_INLINE_LONG_COMPLETION_MIN_ACCEPT_SCORE,
+      maxTokens: DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS,
+      longMaxTokens: DEFAULT_WRITE_INLINE_LONG_COMPLETION_MAX_TOKENS
     }
   }
 }
@@ -611,10 +624,15 @@ function normalizeWriteInlineCompletionSettings(
 ): WriteInlineCompletionSettingsV1 {
   const defaults = defaultWriteSettings().inlineCompletion
   const debounceMs = Number(input?.debounceMs)
+  const longDebounceMs = Number(input?.longDebounceMs)
   const minAcceptScore = Number(input?.minAcceptScore)
+  const longMinAcceptScore = Number(input?.longMinAcceptScore)
   const maxTokens = Number(input?.maxTokens)
+  const longMaxTokens = Number(input?.longMaxTokens)
   return {
     enabled: input?.enabled !== false,
+    retrievalEnabled: input?.retrievalEnabled !== false,
+    longCompletionEnabled: input?.longCompletionEnabled !== false,
     baseUrl:
       typeof input?.baseUrl === 'string' && input.baseUrl.trim()
         ? input.baseUrl.trim()
@@ -627,21 +645,32 @@ function normalizeWriteInlineCompletionSettings(
       Number.isFinite(debounceMs)
         ? Math.max(150, Math.min(5_000, Math.round(debounceMs)))
         : defaults.debounceMs,
+    longDebounceMs:
+      Number.isFinite(longDebounceMs)
+        ? Math.max(1_000, Math.min(15_000, Math.round(longDebounceMs)))
+        : defaults.longDebounceMs,
     minAcceptScore:
       Number.isFinite(minAcceptScore)
         ? Math.max(0.1, Math.min(0.95, minAcceptScore))
         : defaults.minAcceptScore,
+    longMinAcceptScore:
+      Number.isFinite(longMinAcceptScore)
+        ? Math.max(0.1, Math.min(0.95, longMinAcceptScore))
+        : defaults.longMinAcceptScore,
     maxTokens:
       Number.isFinite(maxTokens)
         ? Math.max(16, Math.min(512, Math.round(maxTokens)))
-        : defaults.maxTokens
+        : defaults.maxTokens,
+    longMaxTokens:
+      Number.isFinite(longMaxTokens)
+        ? Math.max(64, Math.min(1_024, Math.round(longMaxTokens)))
+        : defaults.longMaxTokens
   }
 }
 
 export function normalizeWriteInlineCompletionModel(value: unknown): string {
   const trimmed = typeof value === 'string' ? value.trim() : ''
   if (!trimmed || trimmed === 'auto') return DEFAULT_WRITE_INLINE_COMPLETION_MODEL
-  if (trimmed === LEGACY_WRITE_INLINE_COMPLETION_MODEL) return DEFAULT_WRITE_INLINE_COMPLETION_MODEL
   return trimmed
 }
 

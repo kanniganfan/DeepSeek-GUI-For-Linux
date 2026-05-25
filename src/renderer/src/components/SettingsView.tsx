@@ -6,6 +6,9 @@ import {
   DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL,
   DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS,
   DEFAULT_WRITE_INLINE_COMPLETION_MODEL,
+  DEFAULT_WRITE_INLINE_LONG_COMPLETION_DEBOUNCE_MS,
+  DEFAULT_WRITE_INLINE_LONG_COMPLETION_MAX_TOKENS,
+  WRITE_INLINE_COMPLETION_MODEL_IDS,
   DEFAULT_GUI_UPDATE_CHANNEL,
   DEFAULT_WRITE_WORKSPACE_ROOT,
   DEFAULT_CLAW_MODEL,
@@ -1361,6 +1364,16 @@ export function SettingsView(): ReactElement {
                   }
                 />
                 <SettingRow
+                  title={t('writeInlineCompletionRetrieval')}
+                  description={t('writeInlineCompletionRetrievalDesc')}
+                  control={
+                    <Toggle
+                      checked={form.write.inlineCompletion.retrievalEnabled}
+                      onChange={(retrievalEnabled) => update({ write: { inlineCompletion: { retrievalEnabled } } })}
+                    />
+                  }
+                />
+                <SettingRow
                   title={t('writeInlineCompletionBaseUrl')}
                   description={t('writeInlineCompletionBaseUrlDesc')}
                   control={
@@ -1385,10 +1398,17 @@ export function SettingsView(): ReactElement {
                       onChange={(e) => update({ write: { inlineCompletion: { model: e.target.value } } })}
                     />
                     <datalist id="write-inline-completion-model-options">
-                      <option
-                        value={DEFAULT_WRITE_INLINE_COMPLETION_MODEL}
-                        label={t('writeInlineCompletionModelFlash')}
-                      />
+                      {WRITE_INLINE_COMPLETION_MODEL_IDS.map((model) => (
+                        <option
+                          key={model}
+                          value={model}
+                          label={t(
+                            model === DEFAULT_WRITE_INLINE_COMPLETION_MODEL
+                              ? 'writeInlineCompletionModelFlash'
+                              : 'writeInlineCompletionModelPro'
+                          )}
+                        />
+                      ))}
                     </datalist>
                     </div>
                   }
@@ -1443,6 +1463,54 @@ export function SettingsView(): ReactElement {
                       placeholder={String(DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS)}
                       onChange={(e) => update({
                         write: { inlineCompletion: { maxTokens: Number(e.target.value) } }
+                      })}
+                    />
+                  }
+                />
+                <SettingRow
+                  title={t('writeInlineLongCompletion')}
+                  description={t('writeInlineLongCompletionDesc')}
+                  control={
+                    <Toggle
+                      checked={form.write.inlineCompletion.longCompletionEnabled}
+                      onChange={(longCompletionEnabled) => update({
+                        write: { inlineCompletion: { longCompletionEnabled } }
+                      })}
+                    />
+                  }
+                />
+                <SettingRow
+                  title={t('writeInlineLongCompletionDebounce')}
+                  description={t('writeInlineLongCompletionDebounceDesc')}
+                  control={
+                    <select
+                      className={selectControlClass}
+                      value={form.write.inlineCompletion.longDebounceMs}
+                      onChange={(e) => update({
+                        write: { inlineCompletion: { longDebounceMs: Number(e.target.value) } }
+                      })}
+                    >
+                      <option value={1800}>{t('writeInlineLongCompletionDelaySoon')}</option>
+                      <option value={DEFAULT_WRITE_INLINE_LONG_COMPLETION_DEBOUNCE_MS}>{t('writeInlineLongCompletionDelayBalanced')}</option>
+                      <option value={4200}>{t('writeInlineLongCompletionDelayPatient')}</option>
+                      <option value={6500}>{t('writeInlineLongCompletionDelayDeep')}</option>
+                    </select>
+                  }
+                />
+                <SettingRow
+                  title={t('writeInlineLongCompletionMaxTokens')}
+                  description={t('writeInlineLongCompletionMaxTokensDesc')}
+                  control={
+                    <input
+                      type="number"
+                      min={64}
+                      max={1024}
+                      step={16}
+                      className="w-32 rounded-xl border border-ds-border bg-ds-card px-3 py-2 text-[14px] text-ds-ink shadow-sm focus:border-accent/40 focus:outline-none focus:ring-1 focus:ring-accent/30"
+                      value={form.write.inlineCompletion.longMaxTokens}
+                      placeholder={String(DEFAULT_WRITE_INLINE_LONG_COMPLETION_MAX_TOKENS)}
+                      onChange={(e) => update({
+                        write: { inlineCompletion: { longMaxTokens: Number(e.target.value) } }
                       })}
                     />
                   }

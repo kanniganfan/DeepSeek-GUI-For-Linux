@@ -93,6 +93,8 @@ describe('app-ipc-schemas', () => {
     const payload = writeInlineCompletionPayloadSchema.parse({
       prefix: '## Heading\n\nSome intro',
       suffix: '',
+      mode: 'long',
+      workspaceRoot: '/tmp/workspace',
       currentFilePath: '/tmp/workspace/notes.md',
       cursor: {
         line: 3,
@@ -132,6 +134,8 @@ describe('app-ipc-schemas', () => {
     })
 
     expect(payload.model).toBe('deepseek-v4-pro')
+    expect(payload.mode).toBe('long')
+    expect(payload.workspaceRoot).toBe('/tmp/workspace')
     expect(payload.cursor.line).toBe(3)
   })
 })

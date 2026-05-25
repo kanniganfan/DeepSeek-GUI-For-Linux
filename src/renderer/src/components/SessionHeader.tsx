@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { useChatStore } from '../store/chat-store'
 import { formatRelativeTime } from '../lib/format-relative-time'
 import { workspaceLabelFromPath } from '../lib/workspace-label'
-import { formatCompactNumber, formatCost, useThreadUsage } from '../hooks/use-thread-usage'
+import { formatCompactNumber, formatCost, formatPercent, useThreadUsage } from '../hooks/use-thread-usage'
 
 type Props = {
   compact?: boolean
@@ -35,6 +35,13 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
     runtimeConnection === 'ready',
     `${active?.updatedAt ?? ''}:${busy ? 'busy' : 'idle'}`
   )
+  const forkedFromTitle = active?.forkedFromTitle?.trim() ?? ''
+  const forkLabel =
+    active?.forkedFromThreadId
+      ? forkedFromTitle
+        ? t('sessionForkedFrom', { title: forkedFromTitle })
+        : t('sessionForked')
+      : ''
 
   useEffect(() => {
     if (active) {
@@ -62,7 +69,7 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
   if (compact) {
     return (
       <div
-        className={`ds-no-drag flex min-h-0 min-w-0 flex-1 items-center gap-2 text-left ${className}`}
+        className={`session-header-compact ds-no-drag flex min-h-0 min-w-0 flex-1 items-center gap-2 text-left ${className}`}
       >
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] border border-accent/15 bg-accent-soft text-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.62)] dark:border-accent/25 dark:bg-accent-soft dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
           <MessageSquare
@@ -79,24 +86,41 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
             >
               {active.title}
             </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10.5px] leading-[15px] text-ds-faint">
-              <span className="max-w-[min(42vw,240px)] truncate">{activeWorkspaceLabel}</span>
-              <span className="opacity-70">·</span>
-              <span className="shrink-0 capitalize">{active.mode}</span>
-              <span className="opacity-70">·</span>
-              <span className="shrink-0 tabular-nums">
+            <div className="session-header-compact-meta flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10.5px] leading-[15px] text-ds-faint">
+              <span className="session-meta-workspace max-w-[min(42vw,240px)] truncate">{activeWorkspaceLabel}</span>
+              <span className="session-meta-workspace-separator opacity-70">·</span>
+              <span className="session-meta-mode shrink-0 capitalize">{active.mode}</span>
+              <span className="session-meta-mode-separator opacity-70">·</span>
+              <span className="session-meta-time shrink-0 tabular-nums">
                 {formatRelativeTime(active.updatedAt, i18n.language)}
               </span>
+              {active.forkedFromThreadId ? (
+                <>
+                  <span className="session-meta-fork-separator opacity-70">·</span>
+                  <span
+                    className="session-meta-fork inline-flex min-w-0 max-w-[min(34vw,220px)] items-center gap-1 truncate"
+                    title={forkLabel}
+                  >
+                    <GitFork className="h-3 w-3 shrink-0" strokeWidth={1.8} />
+                    <span className="truncate">
+                      {forkedFromTitle
+                        ? t('sessionForkedFromCompact', { title: forkedFromTitle })
+                        : t('sessionForked')}
+                    </span>
+                  </span>
+                </>
+              ) : null}
               {threadUsage ? (
                 <>
-                  <span className="opacity-70">·</span>
+                  <span className="session-meta-usage-separator opacity-70">·</span>
                   <span
-                    className="shrink-0 tabular-nums"
+                    className="session-meta-usage shrink-0 tabular-nums"
                     title={t('sessionUsageTitle', { turns: threadUsage.turns })}
                   >
                     {t('sessionUsageCompact', {
                       tokens: formatCompactNumber(threadUsage.totalTokens),
-                      cost: formatCost(threadUsage.costUsd)
+                      cost: formatCost(threadUsage.costUsd),
+                      cache: formatPercent(threadUsage.cacheHitRate)
                     })}
                   </span>
                 </>
@@ -188,6 +212,15 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
                   {active.workspace.split(/[/\\]/).pop()}
                 </span>
               ) : null}
+              {active.forkedFromThreadId ? (
+                <span
+                  className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-accent/18 bg-accent/8 px-2.5 py-1 font-medium text-accent"
+                  title={forkLabel}
+                >
+                  <GitFork className="h-3.5 w-3.5 shrink-0" strokeWidth={1.8} />
+                  <span className="truncate">{forkLabel}</span>
+                </span>
+              ) : null}
               {threadUsage ? (
                 <>
                   <span
@@ -200,6 +233,15 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
                   </span>
                   <span className="inline-flex items-center rounded-full border border-ds-border bg-ds-card/70 px-2.5 py-1 font-medium text-ds-muted">
                     {t('sessionUsageCost', { cost: formatCost(threadUsage.costUsd) })}
+                  </span>
+                  <span
+                    className="inline-flex items-center rounded-full border border-ds-border bg-ds-card/70 px-2.5 py-1 font-medium text-ds-muted"
+                    title={t('sessionUsageCacheTitle', {
+                      cached: formatCompactNumber(threadUsage.cachedTokens),
+                      miss: formatCompactNumber(threadUsage.cacheMissTokens)
+                    })}
+                  >
+                    {t('sessionUsageCache', { cache: formatPercent(threadUsage.cacheHitRate) })}
                   </span>
                 </>
               ) : null}

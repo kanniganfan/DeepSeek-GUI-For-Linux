@@ -2,6 +2,7 @@ import type {
   InlineCompletionPayload,
   InlineCompletionRequestContext
 } from './types'
+import type { WriteInlineCompletionMode } from '@shared/write-inline-completion'
 
 function compactText(text = ''): string {
   return String(text || '').replace(/\s+/g, ' ').trim()
@@ -31,11 +32,23 @@ function contextNotes(context: InlineCompletionRequestContext): string[] {
 
 export function buildInlineCompletionPayload(
   context: InlineCompletionRequestContext,
-  options: { model?: string } = {}
+  options: {
+    model?: string
+    workspaceRoot?: string
+    mode?: WriteInlineCompletionMode
+  } = {}
 ): InlineCompletionPayload {
+  const mode = options.mode ?? 'short'
   const notes = contextNotes(context)
+  const longInstructions = mode === 'long'
+    ? [
+        'The user has paused for inspiration. You may suggest a richer continuation, but keep it directly grounded in the existing draft.',
+        'Prefer one compact paragraph or a short list continuation. Do not produce a full article, outline, or generic brainstorm.',
+        'Use retrieved references as style and terminology hints when they fit the current passage.'
+      ]
+    : []
   const policy = {
-    name: 'precision-inline-v2',
+    name: mode === 'long' ? 'inspiration-inline-v1' : 'precision-inline-v2',
     instruction: [
       'Return only the text that should be inserted at the cursor.',
       'Prefer returning an empty completion when the local context is ambiguous.',
@@ -43,11 +56,15 @@ export function buildInlineCompletionPayload(
       'Treat this as inline editing plus completion, not open-ended writing.',
       'Keep completions short, local, and structurally aligned with the current markdown block.',
       'Do not invent new sections, summaries, or generic filler when the nearby context does not justify them.',
+      ...longInstructions,
       ...notes
     ].join('\n'),
     acceptanceCriteria: [
       'The completion should look like the most likely next keystrokes for this exact cursor position.',
       'The completion should preserve indentation, markdown markers, and local phrasing.',
+      ...(mode === 'long'
+        ? ['The completion may provide a useful next thought without taking over the whole draft.']
+        : []),
       'The completion should be safe to hide completely if confidence is low.'
     ],
     rejectionCriteria: [
@@ -60,6 +77,8 @@ export function buildInlineCompletionPayload(
   return {
     prefix: context.prefixWindow,
     suffix: context.suffixWindow,
+    mode,
+    workspaceRoot: options.workspaceRoot,
     currentFilePath: context.filePath,
     cursor: {
       line: context.lineNumber,

@@ -129,7 +129,7 @@ function WriteMarkdownPreviewContent({ content, isMarkdown, filePath }: Props): 
   if (!isMarkdown) return plainTextFallback(content)
 
   return (
-    <div className="ds-markdown write-markdown-preview min-h-full px-6 py-6 text-[15px] leading-7 text-ds-ink">
+    <div className="ds-markdown write-markdown-preview min-h-full text-ds-ink">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={rehypePlugins}

@@ -1,6 +1,8 @@
 import type { NormalizedThread } from '../agent/types'
 import { normalizeWorkspaceRoot } from '../lib/workspace-path'
 
+export const WRITE_ASSISTANT_THREAD_TITLE = 'Write Assistant'
+
 export type WriteThreadWorkspaceRecord = {
   activeThreadId: string
   threadIds: string[]
@@ -15,6 +17,9 @@ type StorageLike = {
   getItem: (key: string) => string | null
   setItem: (key: string, value: string) => void
 }
+
+type WriteThreadCandidate = Pick<NormalizedThread, 'id' | 'workspace'> &
+  Partial<Pick<NormalizedThread, 'title' | 'updatedAt' | 'archived'>>
 
 const WRITE_THREAD_REGISTRY_KEY = 'deepseekgui.write.threadRegistry.v1'
 
@@ -32,6 +37,54 @@ function browserStorage(): StorageLike | null {
 
 export function writeWorkspaceKey(workspaceRoot: string | undefined | null): string {
   return normalizeWorkspaceRoot(workspaceRoot ?? '')
+}
+
+function normalizeWriteWorkspacePathForMatch(workspaceRoot: string | undefined | null): string {
+  return writeWorkspaceKey(workspaceRoot)
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase()
+}
+
+function homeRelativeSuffix(workspaceRoot: string): string {
+  const normalized = normalizeWriteWorkspacePathForMatch(workspaceRoot)
+  if (normalized === '~') return ''
+  return normalized.startsWith('~/') ? normalized.slice(1) : ''
+}
+
+function writeWorkspacePathsMatch(
+  left: string | undefined | null,
+  right: string | undefined | null
+): boolean {
+  const a = normalizeWriteWorkspacePathForMatch(left)
+  const b = normalizeWriteWorkspacePathForMatch(right)
+  if (!a || !b) return false
+  if (a === b) return true
+  const aHomeSuffix = homeRelativeSuffix(a)
+  if (aHomeSuffix && b.endsWith(aHomeSuffix)) return true
+  const bHomeSuffix = homeRelativeSuffix(b)
+  return Boolean(bHomeSuffix && a.endsWith(bHomeSuffix))
+}
+
+function writeAssistantTitleMatches(title: string | undefined): boolean {
+  return title?.trim() === WRITE_ASSISTANT_THREAD_TITLE
+}
+
+function updatedAtMs(thread: WriteThreadCandidate): number {
+  const value = typeof thread.updatedAt === 'string' ? Date.parse(thread.updatedAt) : Number.NaN
+  return Number.isFinite(value) ? value : 0
+}
+
+export function writeThreadLooksLikeAssistant(
+  thread: WriteThreadCandidate,
+  writeWorkspaceRoots: string[]
+): boolean {
+  if (!thread.id?.trim() || !writeAssistantTitleMatches(thread.title)) return false
+  const workspaceKey = writeWorkspaceKey(thread.workspace)
+  if (!workspaceKey) return false
+  return writeWorkspaceRoots.some((workspaceRoot) =>
+    writeWorkspacePathsMatch(workspaceKey, workspaceRoot)
+  )
 }
 
 function normalizeThreadIds(ids: unknown): string[] {
@@ -113,7 +166,57 @@ export function writeThreadBelongsToWorkspace(
   workspaceRoot: string,
   registry: WriteThreadRegistry = readWriteThreadRegistry()
 ): boolean {
-  return isWriteThreadId(thread.id, registry) && writeWorkspaceKey(thread.workspace) === writeWorkspaceKey(workspaceRoot)
+  return isWriteThreadId(thread.id, registry) && writeWorkspacePathsMatch(thread.workspace, workspaceRoot)
+}
+
+export function hydrateWriteThreadRegistry(
+  threads: WriteThreadCandidate[],
+  writeWorkspaceRoots: string[],
+  registry: WriteThreadRegistry = readWriteThreadRegistry()
+): WriteThreadRegistry {
+  const normalized = normalizeWriteThreadRegistry(registry)
+  const writeWorkspaceKeys = [
+    ...new Set(writeWorkspaceRoots.map((workspaceRoot) => writeWorkspaceKey(workspaceRoot)).filter(Boolean))
+  ]
+  if (writeWorkspaceKeys.length === 0) return normalized
+
+  const canonicalWriteWorkspaceKey = (workspaceRoot: string | undefined | null): string => (
+    writeWorkspaceKeys.find((key) => writeWorkspacePathsMatch(workspaceRoot, key)) ??
+    writeWorkspaceKey(workspaceRoot)
+  )
+
+  const inferredByWorkspace: Record<string, string[]> = {}
+  const candidates = threads
+    .filter((thread) => writeThreadLooksLikeAssistant(thread, writeWorkspaceKeys))
+    .sort((a, b) => updatedAtMs(b) - updatedAtMs(a))
+
+  for (const thread of candidates) {
+    const workspaceKey = canonicalWriteWorkspaceKey(thread.workspace)
+    const threadId = thread.id.trim()
+    if (!workspaceKey || !threadId) continue
+    const ids = inferredByWorkspace[workspaceKey] ?? []
+    if (!ids.includes(threadId)) ids.push(threadId)
+    inferredByWorkspace[workspaceKey] = ids
+  }
+
+  const workspaces: WriteThreadRegistry['workspaces'] = { ...normalized.workspaces }
+  for (const [workspaceRoot, inferredIds] of Object.entries(inferredByWorkspace)) {
+    const current = workspaces[workspaceRoot]
+    const threadIds = [
+      ...(current?.threadIds ?? []),
+      ...inferredIds.filter((id) => !(current?.threadIds ?? []).includes(id))
+    ]
+    if (threadIds.length === 0) continue
+    workspaces[workspaceRoot] = {
+      activeThreadId:
+        current?.activeThreadId && threadIds.includes(current.activeThreadId)
+          ? current.activeThreadId
+          : threadIds[0],
+      threadIds
+    }
+  }
+
+  return normalizeWriteThreadRegistry({ version: 1, workspaces })
 }
 
 export function markWriteThread(
@@ -182,6 +285,7 @@ export function activeWriteThreadForWorkspace(
   const candidates = record.threadIds
     .map((id) => threads.find((thread) => thread.id === id) ?? null)
     .filter((thread): thread is NormalizedThread => Boolean(thread))
-    .filter((thread) => writeWorkspaceKey(thread.workspace) === key)
+    .filter((thread) => thread.archived !== true)
+    .filter((thread) => writeWorkspacePathsMatch(thread.workspace, key))
   return candidates.find((thread) => thread.id === record.activeThreadId) ?? candidates[0] ?? null
 }

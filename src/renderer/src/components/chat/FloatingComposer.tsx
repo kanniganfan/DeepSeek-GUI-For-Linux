@@ -17,7 +17,12 @@ import {
 import { useTranslation } from 'react-i18next'
 import { useChatStore } from '../../store/chat-store'
 import { normalizeWorkspaceRoot } from '../../lib/workspace-path'
-import { formatCompactNumber, formatCost, useThreadUsageState } from '../../hooks/use-thread-usage'
+import {
+  formatCompactNumber,
+  formatCost,
+  formatPercent,
+  useThreadUsageState
+} from '../../hooks/use-thread-usage'
 import { GitBranchPicker } from './GitBranchPicker'
 
 type QueuedComposerMessage = {
@@ -397,8 +402,8 @@ export function FloatingComposer({
 
   return (
     <div className={compact
-      ? 'pointer-events-auto w-full pb-0 pt-0'
-      : 'ds-chat-column-inset pointer-events-auto w-full max-w-4xl pb-5 pt-1'}
+      ? 'ds-floating-composer pointer-events-auto w-full pb-0 pt-0'
+      : 'ds-floating-composer ds-chat-column-inset pointer-events-auto w-full max-w-4xl pb-5 pt-1'}
     >
       {queuedMessages.length > 0 ? (
         <div className="mb-2 rounded-[22px] border border-ds-border bg-ds-card/88 px-4 py-3 shadow-sm backdrop-blur-xl">
@@ -687,32 +692,41 @@ export function FloatingComposer({
         </div>
       </div>
       {compact ? null : (
-        <div className="mt-2 flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div className="ds-composer-footer mt-2 flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4">
+          <div className="ds-composer-footer-left flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <GitBranchPicker workspaceRoot={effectiveWorkspaceRoot} />
             {showThreadUsageFooter ? (
               <div
-                className="ds-no-drag inline-flex h-8 max-w-full shrink-0 items-center gap-2 rounded-lg border border-ds-border-muted bg-ds-card/72 px-2.5 text-[12.5px] font-medium text-ds-muted shadow-sm"
+                className="ds-composer-usage ds-no-drag inline-flex h-8 max-w-full min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-ds-border-muted bg-ds-card/72 px-2.5 text-[12.5px] font-medium text-ds-muted shadow-sm"
                 title={
                   threadUsage
-                    ? t('sessionUsageTitle', { turns: threadUsage.turns })
+                    ? t('sessionUsageCacheTitle', {
+                        cached: formatCompactNumber(threadUsage.cachedTokens),
+                        miss: formatCompactNumber(threadUsage.cacheMissTokens)
+                      })
                     : t('sessionUsageUnavailable')
                 }
               >
                 <BarChart3 className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.9} />
                 {threadUsage ? (
                   <>
-                    <span className="shrink-0 tabular-nums">
+                    <span className="ds-composer-usage-tokens shrink-0 tabular-nums">
                       {t('sessionUsageTokens', {
                         tokens: formatCompactNumber(threadUsage.totalTokens)
                       })}
                     </span>
-                    <span className="text-ds-faint">·</span>
-                    <span className="shrink-0 tabular-nums">
+                    <span className="ds-composer-usage-cost-separator text-ds-faint">·</span>
+                    <span className="ds-composer-usage-cost shrink-0 tabular-nums">
                       {t('sessionUsageCost', { cost: formatCost(threadUsage.costUsd) })}
                     </span>
-                    <span className="hidden text-ds-faint sm:inline">·</span>
-                    <span className="hidden shrink-0 tabular-nums sm:inline">
+                    <span className="ds-composer-usage-cache-separator text-ds-faint">·</span>
+                    <span className="ds-composer-usage-cache shrink-0 tabular-nums">
+                      {t('sessionUsageCache', {
+                        cache: formatPercent(threadUsage.cacheHitRate)
+                      })}
+                    </span>
+                    <span className="ds-composer-usage-turns-separator hidden text-ds-faint sm:inline">·</span>
+                    <span className="ds-composer-usage-turns hidden shrink-0 tabular-nums sm:inline">
                       {t('sessionUsageTurns', { turns: threadUsage.turns })}
                     </span>
                   </>
@@ -727,8 +741,8 @@ export function FloatingComposer({
             ) : null}
           </div>
           {footerHint ? (
-            <div className="min-w-[160px] flex-1 text-right text-[13.5px] font-medium text-ds-faint">
-              <span className="truncate">{footerHint}</span>
+            <div className="ds-composer-footer-hint min-w-0 flex-1 text-right text-[13.5px] font-medium text-ds-faint">
+              <span className="block truncate">{footerHint}</span>
             </div>
           ) : null}
         </div>

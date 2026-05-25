@@ -169,6 +169,8 @@ export const writeInlineCompletionPayloadSchema = z
   .object({
     prefix: z.string().max(MAX_EDITOR_COMPLETION_TEXT),
     suffix: z.string().max(MAX_EDITOR_COMPLETION_TEXT),
+    mode: z.enum(['short', 'long']).optional(),
+    workspaceRoot: optionalTrimmedString(MAX_PATH_LENGTH),
     currentFilePath: optionalTrimmedString(MAX_PATH_LENGTH),
     cursor: z
       .object({

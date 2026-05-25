@@ -5,6 +5,9 @@ import {
   DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS,
   DEFAULT_WRITE_INLINE_COMPLETION_MIN_ACCEPT_SCORE,
   DEFAULT_WRITE_INLINE_COMPLETION_MODEL,
+  DEFAULT_WRITE_INLINE_LONG_COMPLETION_DEBOUNCE_MS,
+  DEFAULT_WRITE_INLINE_LONG_COMPLETION_MAX_TOKENS,
+  DEFAULT_WRITE_INLINE_LONG_COMPLETION_MIN_ACCEPT_SCORE,
   DEFAULT_WRITE_WORKSPACE_ROOT,
   normalizeWriteInlineCompletionModel,
   type WriteInlineCompletionSettingsV1,
@@ -53,7 +56,7 @@ export type WriteWorkspaceState = {
   setFileContent: (content: string) => void
   syncActiveFileFromDisk: (
     workspaceRoot: string,
-    options?: { path?: string; content?: string; message?: string; animate?: boolean }
+    options?: { path?: string; content?: string; message?: string; animate?: boolean; force?: boolean }
   ) => Promise<boolean>
   flushSave: (workspaceRoot: string) => Promise<boolean>
   createFile: (workspaceRoot: string, path: string, content?: string) => Promise<string | null>
@@ -154,25 +157,39 @@ function normalizeWriteSettings(settings?: Partial<WriteSettingsV1> | null): {
   ])
   const rawInlineCompletion = (settings?.inlineCompletion ?? {}) as Partial<WriteInlineCompletionSettingsV1>
   const debounceMs = Number(rawInlineCompletion.debounceMs)
+  const longDebounceMs = Number(rawInlineCompletion.longDebounceMs)
   const minAcceptScore = Number(rawInlineCompletion.minAcceptScore)
+  const longMinAcceptScore = Number(rawInlineCompletion.longMinAcceptScore)
   const maxTokens = Number(rawInlineCompletion.maxTokens)
+  const longMaxTokens = Number(rawInlineCompletion.longMaxTokens)
   return {
     defaultWorkspaceRoot,
     activeWorkspaceRoot: workspaces.includes(activeWorkspaceRoot) ? activeWorkspaceRoot : defaultWorkspaceRoot,
     workspaces: workspaces.length > 0 ? workspaces : [defaultWorkspaceRoot],
     inlineCompletion: {
       enabled: rawInlineCompletion.enabled !== false,
+      retrievalEnabled: rawInlineCompletion.retrievalEnabled !== false,
+      longCompletionEnabled: rawInlineCompletion.longCompletionEnabled !== false,
       baseUrl: rawInlineCompletion.baseUrl?.trim() || DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL,
       model: normalizeWriteInlineCompletionModel(rawInlineCompletion.model),
       debounceMs: Number.isFinite(debounceMs)
         ? Math.max(150, Math.min(5_000, Math.round(debounceMs)))
         : DEFAULT_WRITE_INLINE_COMPLETION_DEBOUNCE_MS,
+      longDebounceMs: Number.isFinite(longDebounceMs)
+        ? Math.max(1_000, Math.min(15_000, Math.round(longDebounceMs)))
+        : DEFAULT_WRITE_INLINE_LONG_COMPLETION_DEBOUNCE_MS,
       minAcceptScore: Number.isFinite(minAcceptScore)
         ? Math.max(0.1, Math.min(0.95, minAcceptScore))
         : DEFAULT_WRITE_INLINE_COMPLETION_MIN_ACCEPT_SCORE,
+      longMinAcceptScore: Number.isFinite(longMinAcceptScore)
+        ? Math.max(0.1, Math.min(0.95, longMinAcceptScore))
+        : DEFAULT_WRITE_INLINE_LONG_COMPLETION_MIN_ACCEPT_SCORE,
       maxTokens: Number.isFinite(maxTokens)
         ? Math.max(16, Math.min(512, Math.round(maxTokens)))
-        : DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS
+        : DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS,
+      longMaxTokens: Number.isFinite(longMaxTokens)
+        ? Math.max(64, Math.min(1_024, Math.round(longMaxTokens)))
+        : DEFAULT_WRITE_INLINE_LONG_COMPLETION_MAX_TOKENS
     }
   }
 }
@@ -270,11 +287,16 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
   workspaceRoots: [],
   inlineCompletion: {
     enabled: true,
+    retrievalEnabled: true,
+    longCompletionEnabled: true,
     baseUrl: DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL,
     model: DEFAULT_WRITE_INLINE_COMPLETION_MODEL,
     debounceMs: DEFAULT_WRITE_INLINE_COMPLETION_DEBOUNCE_MS,
+    longDebounceMs: DEFAULT_WRITE_INLINE_LONG_COMPLETION_DEBOUNCE_MS,
     minAcceptScore: DEFAULT_WRITE_INLINE_COMPLETION_MIN_ACCEPT_SCORE,
-    maxTokens: DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS
+    longMinAcceptScore: DEFAULT_WRITE_INLINE_LONG_COMPLETION_MIN_ACCEPT_SCORE,
+    maxTokens: DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS,
+    longMaxTokens: DEFAULT_WRITE_INLINE_LONG_COMPLETION_MAX_TOKENS
   },
   inlineCompletionApiReady: false,
   settingsLoading: false,
@@ -517,8 +539,9 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
 
   syncActiveFileFromDisk: async (workspaceRoot, options = {}) => {
     const snapshot = get()
+    const force = options.force === true
     if (!snapshot.activeFilePath) return false
-    if (snapshot.saveStatus === 'dirty' || snapshot.saveStatus === 'saving') return false
+    if (!force && (snapshot.saveStatus === 'dirty' || snapshot.saveStatus === 'saving')) return false
     if (options.path && !pathsEqual(options.path, snapshot.activeFilePath)) return false
 
     if (options.message) {
@@ -545,7 +568,7 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
 
     const latest = get()
     if (!latest.activeFilePath || !pathsEqual(latest.activeFilePath, resolvedPath)) return false
-    if (latest.saveStatus === 'dirty' || latest.saveStatus === 'saving') return false
+    if (!force && (latest.saveStatus === 'dirty' || latest.saveStatus === 'saving')) return false
     if (latest.fileContent === content && lastSavedContent === content) {
       set({ saveStatus: 'saved', fileError: null, fileLoading: false })
       return true

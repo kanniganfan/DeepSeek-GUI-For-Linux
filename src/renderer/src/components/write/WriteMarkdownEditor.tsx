@@ -37,12 +37,16 @@ export type WriteEditorSelectionState = {
 
 type Props = {
   value: string
+  workspaceRoot?: string | null
   filePath?: string | null
   appearance?: 'source' | 'live'
   completionModel: string
   completionEnabled: boolean
   completionDebounceMs: number
   completionMinAcceptScore: number
+  completionLongEnabled: boolean
+  completionLongDebounceMs: number
+  completionLongMinAcceptScore: number
   onChange: (value: string) => void
   onSelectionChange: (selection: WriteEditorSelectionState) => void
   onSaveShortcut: () => void
@@ -175,12 +179,16 @@ function buildEditorTheme(appearance: 'source' | 'live'): Extension {
 
 export function WriteMarkdownEditor({
   value,
+  workspaceRoot,
   filePath,
   appearance = 'live',
   completionModel,
   completionEnabled,
   completionDebounceMs,
   completionMinAcceptScore,
+  completionLongEnabled,
+  completionLongDebounceMs,
+  completionLongMinAcceptScore,
   onChange,
   onSelectionChange,
   onSaveShortcut
@@ -189,22 +197,30 @@ export function WriteMarkdownEditor({
   const viewRef = useRef<EditorView | null>(null)
   const themeCompartmentRef = useRef<Compartment | null>(null)
   const livePreviewCompartmentRef = useRef<Compartment | null>(null)
+  const workspaceRootRef = useRef(workspaceRoot ?? '')
   const filePathRef = useRef(filePath ?? '')
   const completionModelRef = useRef(completionModel)
   const completionEnabledRef = useRef(completionEnabled)
   const completionDebounceMsRef = useRef(completionDebounceMs)
   const completionMinAcceptScoreRef = useRef(completionMinAcceptScore)
+  const completionLongEnabledRef = useRef(completionLongEnabled)
+  const completionLongDebounceMsRef = useRef(completionLongDebounceMs)
+  const completionLongMinAcceptScoreRef = useRef(completionLongMinAcceptScore)
   const appearanceRef = useRef(appearance)
   const onChangeRef = useRef(onChange)
   const onSelectionChangeRef = useRef(onSelectionChange)
   const onSaveShortcutRef = useRef(onSaveShortcut)
   const valueRef = useRef(value)
 
+  workspaceRootRef.current = workspaceRoot ?? ''
   filePathRef.current = filePath ?? ''
   completionModelRef.current = completionModel
   completionEnabledRef.current = completionEnabled
   completionDebounceMsRef.current = completionDebounceMs
   completionMinAcceptScoreRef.current = completionMinAcceptScore
+  completionLongEnabledRef.current = completionLongEnabled
+  completionLongDebounceMsRef.current = completionLongDebounceMs
+  completionLongMinAcceptScoreRef.current = completionLongMinAcceptScore
   appearanceRef.current = appearance
   onChangeRef.current = onChange
   onSelectionChangeRef.current = onSelectionChange
@@ -222,17 +238,24 @@ export function WriteMarkdownEditor({
     const inlineCompletionExtension = buildInlineCompletionExtension({
       getDebounceMs: () => completionDebounceMsRef.current,
       getMinAcceptScore: () => completionMinAcceptScoreRef.current,
+      getLongDebounceMs: () => completionLongDebounceMsRef.current,
+      getLongMinAcceptScore: () => completionLongMinAcceptScoreRef.current,
+      isLongEnabled: () => completionLongEnabledRef.current,
       isEnabled: () => completionEnabledRef.current,
       getFilePath: () => filePathRef.current,
       language: 'markdown',
       getModel: () => completionModelRef.current,
-      requestCompletion: async (context) => {
+      requestCompletion: async (context, mode) => {
         if (typeof window.dsGui?.requestWriteInlineCompletion !== 'function') return null
         const result = await window.dsGui.requestWriteInlineCompletion(
-          buildInlineCompletionPayload(context, { model: completionModelRef.current })
+          buildInlineCompletionPayload(context, {
+            model: completionModelRef.current,
+            workspaceRoot: workspaceRootRef.current,
+            mode
+          })
         )
         if (!result.ok || result.completion.length === 0) return null
-        return { text: result.completion }
+        return { text: result.completion, mode }
       }
     })
 

@@ -7,6 +7,7 @@ import {
   Archive,
   Folder,
   FolderOpen,
+  GitFork,
   LayoutGrid,
   Loader2,
   MessageSquare,
@@ -369,6 +370,19 @@ function ThreadRow({
   const { t } = useTranslation('common')
   const showUnreadDot = showUnread && !showRunning
   const archived = thread.archived === true
+  const forkedFromTitle = thread.forkedFromTitle?.trim() ?? ''
+  const forked = Boolean(thread.forkedFromThreadId)
+  const forkLabel = forked
+    ? forkedFromTitle
+      ? t('sidebarThreadForkedFrom', { title: forkedFromTitle })
+      : t('sidebarThreadForked')
+    : ''
+  const ariaLabel = [
+    thread.title,
+    showRunning ? t('sidebarThreadRunning') : '',
+    showUnreadDot ? t('sidebarThreadUnread') : '',
+    forkLabel
+  ].filter(Boolean).join(' — ')
 
   return (
     <div
@@ -387,18 +401,13 @@ function ThreadRow({
       <button
         type="button"
         onClick={onSelect}
-        className="flex w-full items-center gap-1.5 px-3 py-2 pr-8 text-left"
+        className="flex w-full items-start gap-1.5 px-3 py-2 pr-8 text-left"
         disabled={deleting}
-        aria-label={
-          showRunning
-            ? `${thread.title} — ${t('sidebarThreadRunning')}`
-            : showUnreadDot
-              ? `${thread.title} — ${t('sidebarThreadUnread')}`
-              : thread.title
-        }
+        aria-label={ariaLabel}
+        title={forkLabel ? `${thread.title}\n${forkLabel}` : thread.title}
       >
         <span
-          className="flex w-4 shrink-0 flex-col items-center justify-center self-center"
+          className="flex w-4 shrink-0 flex-col items-center justify-center self-start pt-0.5"
           aria-hidden={!showRunning && !showUnreadDot}
         >
           {showRunning ? (
@@ -410,20 +419,42 @@ function ThreadRow({
             />
           ) : null}
         </span>
-        <MessageSquare
-          className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-accent' : 'text-ds-faint/90'}`}
-          strokeWidth={1.8}
-        />
-        <span
-          className={`min-w-0 flex-1 truncate text-[14px] leading-[1.35] ${
-            showUnreadDot && !active ? 'font-semibold text-ds-ink' : 'text-ds-ink'
-          }`}
-          title={thread.title}
-        >
-          {thread.title}
-        </span>
-        <span className="shrink-0 text-[12px] tabular-nums text-ds-faint transition group-hover:opacity-0">
-          {formatRelativeTime(thread.updatedAt, locale)}
+        {forked ? (
+          <GitFork
+            className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${active ? 'text-accent' : 'text-ds-faint/90'}`}
+            strokeWidth={1.8}
+          />
+        ) : (
+          <MessageSquare
+            className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${active ? 'text-accent' : 'text-ds-faint/90'}`}
+            strokeWidth={1.8}
+          />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={`min-w-0 flex-1 truncate text-[14px] leading-[1.35] ${
+                showUnreadDot && !active ? 'font-semibold text-ds-ink' : 'text-ds-ink'
+              }`}
+            >
+              {thread.title}
+            </span>
+            {forked ? (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-accent/15 bg-accent/8 px-1.5 py-0.5 text-[10.5px] font-semibold leading-none text-accent">
+                <GitFork className="h-2.5 w-2.5" strokeWidth={1.8} />
+                {t('sidebarThreadForkBadge')}
+              </span>
+            ) : null}
+          </span>
+          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11.5px] leading-4 text-ds-faint">
+            <span className="shrink-0 tabular-nums">{formatRelativeTime(thread.updatedAt, locale)}</span>
+            {forkLabel ? (
+              <>
+                <span className="opacity-70">·</span>
+                <span className="truncate">{forkLabel}</span>
+              </>
+            ) : null}
+          </span>
         </span>
       </button>
       <button

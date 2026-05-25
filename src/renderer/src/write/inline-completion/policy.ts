@@ -1,4 +1,7 @@
-import { INLINE_COMPLETION_MIN_CONTEXT_CHARS } from './constants'
+import {
+  INLINE_COMPLETION_MIN_CONTEXT_CHARS,
+  INLINE_LONG_COMPLETION_MIN_CONTEXT_CHARS
+} from './constants'
 import type { InlineCompletionRequestContext } from './types'
 
 function compactText(text = ''): string {
@@ -31,6 +34,32 @@ export function shouldRequestInlineCompletion(
   ) {
     return false
   }
+
+  return true
+}
+
+export function shouldRequestLongInlineCompletion(
+  context: InlineCompletionRequestContext | null,
+  isEnabled?: () => boolean,
+  isLongEnabled?: () => boolean
+): boolean {
+  if (typeof isLongEnabled === 'function' && !isLongEnabled()) return false
+  if (!shouldRequestInlineCompletion(context, isEnabled)) return false
+  if (!context) return false
+  if (!context.isAtLineEnd) return false
+  if (context.hasTableContext || context.hasHeadingContext) return false
+  if (context.currentLineSuffixTrimmed) return false
+
+  const localSignalLength = compactText(context.currentLinePrefix).length
+  const documentSignalLength = compactText(context.docPreview).length
+  const hasLongEnoughSignal =
+    documentSignalLength >= INLINE_LONG_COMPLETION_MIN_CONTEXT_CHARS ||
+    localSignalLength >= 12 ||
+    context.hasStructuralContext ||
+    context.isParagraphBreakOpportunity
+
+  if (!hasLongEnoughSignal) return false
+  if (context.endsWithWordChar && localSignalLength < 12) return false
 
   return true
 }

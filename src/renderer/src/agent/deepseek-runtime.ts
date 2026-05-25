@@ -2,6 +2,8 @@ import type {
   AgentProvider,
   AgentProviderId,
   ChatBlock,
+  CompactionBlock,
+  CompactionEventPayload,
   NormalizedThread,
   ThreadListOptions,
   ThreadDeltaEvent,
@@ -15,6 +17,7 @@ import type {
 import type { AppSettingsV1 } from '@shared/app-settings'
 import { unwrapClawRuntimePromptForDisplay, unwrapClawUserPromptForDisplay } from '@shared/app-settings'
 import { extractDiffFilePath } from '../lib/diff-stats'
+import { buildTurnDurationByUserId } from './thread-timing'
 
 type ThreadRecordJson = {
   id: string
@@ -26,6 +29,14 @@ type ThreadRecordJson = {
   status?: string
   archived?: boolean
   title?: string | null
+  source_thread_id?: string | null
+  parent_thread_id?: string | null
+  forked_from_thread_id?: string | null
+  source_thread_title?: string | null
+  parent_thread_title?: string | null
+  forked_from_title?: string | null
+  forked_at?: string | null
+  forked_from_message_count?: number | null
 }
 
 type ThreadSummaryJson = {
@@ -38,6 +49,25 @@ type ThreadSummaryJson = {
   updated_at: string
   latest_turn_id?: string | null
   latest_turn_status?: string | null
+  source_thread_id?: string | null
+  parent_thread_id?: string | null
+  forked_from_thread_id?: string | null
+  source_thread_title?: string | null
+  parent_thread_title?: string | null
+  forked_from_title?: string | null
+  forked_at?: string | null
+  forked_from_message_count?: number | null
+}
+
+type ThreadForkJsonFields = {
+  source_thread_id?: string | null
+  parent_thread_id?: string | null
+  forked_from_thread_id?: string | null
+  source_thread_title?: string | null
+  parent_thread_title?: string | null
+  forked_from_title?: string | null
+  forked_at?: string | null
+  forked_from_message_count?: number | null
 }
 
 type TurnItemJson = {
@@ -109,6 +139,39 @@ function titleFromThread(t: ThreadRecordJson): string {
   return t.id.slice(0, 8)
 }
 
+function stringField(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+function finiteNumberField(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function threadForkFields(t: ThreadForkJsonFields): Partial<NormalizedThread> {
+  const sourceThreadId = stringField(
+    t.source_thread_id,
+    t.parent_thread_id,
+    t.forked_from_thread_id
+  )
+  const forkedFromMessageCount = finiteNumberField(t.forked_from_message_count)
+  if (!sourceThreadId && forkedFromMessageCount === undefined) return {}
+  const parentTitle = stringField(
+    t.source_thread_title,
+    t.parent_thread_title,
+    t.forked_from_title
+  )
+  const forkedAt = stringField(t.forked_at)
+  return {
+    ...(sourceThreadId ? { forkedFromThreadId: sourceThreadId } : {}),
+    ...(parentTitle ? { forkedFromTitle: parentTitle } : {}),
+    ...(forkedAt ? { forkedAt } : {}),
+    ...(forkedFromMessageCount !== undefined ? { forkedFromMessageCount } : {})
+  }
+}
+
 function threadFromRecord(t: ThreadRecordJson): NormalizedThread {
   return {
     id: t.id,
@@ -118,7 +181,8 @@ function threadFromRecord(t: ThreadRecordJson): NormalizedThread {
     mode: t.mode,
     workspace: t.workspace,
     status: t.status,
-    archived: t.archived === true
+    archived: t.archived === true,
+    ...threadForkFields(t)
   }
 }
 
@@ -134,7 +198,8 @@ function threadFromSummary(t: ThreadSummaryJson): NormalizedThread {
     latestTurnId: typeof t.latest_turn_id === 'string' ? t.latest_turn_id : undefined,
     latestTurnStatus:
       typeof t.latest_turn_status === 'string' ? t.latest_turn_status : undefined,
-    status: typeof t.latest_turn_status === 'string' ? t.latest_turn_status : undefined
+    status: typeof t.latest_turn_status === 'string' ? t.latest_turn_status : undefined,
+    ...threadForkFields(t)
   }
 }
 
@@ -380,6 +445,50 @@ function toolBlockFromItem(item: TurnItemJson): ToolBlock {
   }
 }
 
+function numberPayload(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function compactionBlockFromItem(
+  item: TurnItemJson,
+  extra?: Pick<CompactionBlock, 'auto' | 'messagesBefore' | 'messagesAfter'>
+): CompactionBlock {
+  const detail = typeof item.detail === 'string' && item.detail.trim() ? item.detail : undefined
+  return {
+    kind: 'compaction',
+    id: item.id,
+    createdAt: itemCreatedAt(item),
+    summary: item.summary || item.kind,
+    status: statusFromString(item.status),
+    detail,
+    ...(extra?.auto !== undefined ? { auto: extra.auto } : {}),
+    ...(extra?.messagesBefore !== undefined ? { messagesBefore: extra.messagesBefore } : {}),
+    ...(extra?.messagesAfter !== undefined ? { messagesAfter: extra.messagesAfter } : {})
+  }
+}
+
+function compactionEventFromItem(
+  item: TurnItemJson,
+  payload: Record<string, unknown>,
+  status: 'running' | 'success' | 'error'
+): CompactionEventPayload {
+  const detail = typeof item.detail === 'string' && item.detail.trim() ? item.detail : undefined
+  return {
+    itemId: item.id,
+    summary: item.summary || item.kind,
+    status,
+    detail,
+    createdAt: itemCreatedAt(item),
+    ...(typeof payload.auto === 'boolean' ? { auto: payload.auto } : {}),
+    ...(numberPayload(payload.messages_before) !== undefined
+      ? { messagesBefore: numberPayload(payload.messages_before) }
+      : {}),
+    ...(numberPayload(payload.messages_after) !== undefined
+      ? { messagesAfter: numberPayload(payload.messages_after) }
+      : {})
+  }
+}
+
 function itemCreatedAt(item: TurnItemJson): string | undefined {
   return item.started_at ?? item.ended_at ?? undefined
 }
@@ -512,6 +621,7 @@ export class DeepseekRuntimeProvider implements AgentProvider {
     threadStatus?: string
     latestTurnId?: string
     latestUserMessageId?: string
+    turnDurationByUserId?: Record<string, number>
   }> {
     const r = await window.dsGui.runtimeRequest(`/v1/threads/${encodeURIComponent(threadId)}`, 'GET')
     if (!r.ok) throw toRuntimeError(readRuntimeError(r.body, 'failed to load thread'))
@@ -570,7 +680,9 @@ export class DeepseekRuntimeProvider implements AgentProvider {
         blocks.push(toolBlockFromItem(it))
       } else if (it.kind === 'error') {
         blocks.push({ kind: 'system', id: it.id, createdAt: itemCreatedAt(it), text: `⚠ ${it.detail ?? it.summary}` })
-      } else if (it.kind === 'status' || it.kind === 'context_compaction') {
+      } else if (it.kind === 'context_compaction') {
+        blocks.push(compactionBlockFromItem(it))
+      } else if (it.kind === 'status') {
         const text = it.summary || it.kind
         blocks.push({ kind: 'system', id: it.id, createdAt: itemCreatedAt(it), text })
       }
@@ -580,7 +692,8 @@ export class DeepseekRuntimeProvider implements AgentProvider {
       latestSeq: detail.latest_seq ?? 0,
       threadStatus: detail.thread.status ?? latestTurnStatus,
       latestTurnId,
-      latestUserMessageId
+      latestUserMessageId,
+      turnDurationByUserId: buildTurnDurationByUserId(detail.turns, detail.items)
     }
   }
 
@@ -888,6 +1001,10 @@ export class DeepseekRuntimeProvider implements AgentProvider {
                   if (userMessage) sink.onUserMessage(userMessage)
                   return
                 }
+                if (it?.kind === 'context_compaction') {
+                  sink.onCompaction(compactionEventFromItem(it, payload, 'running'))
+                  return
+                }
                 if (it && TOOL_ITEM_KINDS.has(it.kind)) {
                   const tool = readPayloadTool(payload)
                   if (tool?.name === REQUEST_USER_INPUT_TOOL) {
@@ -919,6 +1036,18 @@ export class DeepseekRuntimeProvider implements AgentProvider {
                 if (it?.kind === 'user_message') {
                   const userMessage = userMessageEventFromItem(it)
                   if (userMessage) sink.onUserMessage(userMessage)
+                  return
+                }
+                if (it?.kind === 'context_compaction') {
+                  sink.onCompaction(
+                    compactionEventFromItem(
+                      it,
+                      payload,
+                      ev === 'item.failed' || statusFromString(it.status) === 'error'
+                        ? 'error'
+                        : 'success'
+                    )
+                  )
                   return
                 }
                 if (it && TOOL_ITEM_KINDS.has(it.kind)) {

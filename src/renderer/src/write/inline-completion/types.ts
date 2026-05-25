@@ -1,4 +1,7 @@
-import type { WriteInlineCompletionRequest } from '@shared/write-inline-completion'
+import type {
+  WriteInlineCompletionMode,
+  WriteInlineCompletionRequest
+} from '@shared/write-inline-completion'
 
 export type InlineCompletionRequestContext = {
   filePath: string
@@ -40,6 +43,7 @@ export type InlineCompletionRequestContext = {
 
 export type InlineCompletionSuggestion = {
   text: string
+  mode?: WriteInlineCompletionMode
 }
 
 export type InlineCompletionFeedback = {
@@ -48,6 +52,7 @@ export type InlineCompletionFeedback = {
   reason: string
   score: number
   preview: string
+  mode?: WriteInlineCompletionMode
   cursor?: {
     line: number
     column: number

@@ -2,25 +2,36 @@ import { Prec, StateEffect, StateField } from '@codemirror/state'
 import type { Extension, EditorState } from '@codemirror/state'
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap } from '@codemirror/view'
 import { buildInlineCompletionRequestContext } from './context'
-import { INLINE_COMPLETION_DEBOUNCE_MS } from './constants'
+import {
+  INLINE_COMPLETION_DEBOUNCE_MS,
+  INLINE_LONG_COMPLETION_DEBOUNCE_MS
+} from './constants'
 import { evaluateInlineCompletionCandidate } from './feedback'
-import { shouldRequestInlineCompletion } from './policy'
+import {
+  shouldRequestInlineCompletion,
+  shouldRequestLongInlineCompletion
+} from './policy'
 import type {
   InlineCompletionFeedback,
   InlineCompletionRequestContext,
   InlineCompletionSuggestion
 } from './types'
+import type { WriteInlineCompletionMode } from '@shared/write-inline-completion'
 
 type InlineCompletionConfig = {
   debounceMs?: number
   getDebounceMs?: () => number
   getMinAcceptScore?: () => number
+  getLongDebounceMs?: () => number
+  getLongMinAcceptScore?: () => number
+  isLongEnabled?: () => boolean
   isEnabled?: () => boolean
   getFilePath?: () => string
   language?: string
   getModel?: () => string
   requestCompletion: (
-    context: InlineCompletionRequestContext
+    context: InlineCompletionRequestContext,
+    mode: WriteInlineCompletionMode
   ) => Promise<InlineCompletionSuggestion | null>
   onError?: (error: unknown) => void
   onFeedback?: (feedback: InlineCompletionFeedback) => void
@@ -86,7 +97,8 @@ function feedbackFromInteraction(
     decision,
     reason: decision === 'accept' ? 'tab-applied' : 'escape-dismissed',
     score: completion?.feedback.score || 0,
-    preview: completion?.feedback.preview || ''
+    preview: completion?.feedback.preview || '',
+    mode: completion?.feedback.mode
   }
 }
 
@@ -131,7 +143,8 @@ const inlineCompletionRenderPlugin = ViewPlugin.fromClass(
 const inlineCompletionController = (config: InlineCompletionConfig) =>
   ViewPlugin.fromClass(class {
     private sequence = 0
-    private timer: number | null = null
+    private shortTimer: number | null = null
+    private longTimer: number | null = null
 
     constructor(private readonly view: EditorView) {
       this.schedule(view.state)
@@ -144,55 +157,85 @@ const inlineCompletionController = (config: InlineCompletionConfig) =>
 
     private schedule(state: EditorState): void {
       this.sequence += 1
-      if (this.timer) window.clearTimeout(this.timer)
-      this.timer = null
+      this.clearTimers()
 
       const requestContext = buildRequestContext(state, config)
-      if (!shouldRequestInlineCompletion(requestContext, config.isEnabled)) {
+      const shouldRequestShort = shouldRequestInlineCompletion(requestContext, config.isEnabled)
+      const shouldRequestLong = shouldRequestLongInlineCompletion(
+        requestContext,
+        config.isEnabled,
+        config.isLongEnabled
+      )
+      if (!shouldRequestShort && !shouldRequestLong) {
         clearInlineCompletion(this.view)
         return
       }
 
       const requestId = this.sequence
-      this.timer = window.setTimeout(async () => {
-        this.timer = null
-        const latestState = this.view.state
-        const latestContext = buildRequestContext(latestState, config)
-        if (!shouldRequestInlineCompletion(latestContext, config.isEnabled)) {
-          clearInlineCompletion(this.view)
-          return
-        }
+      if (shouldRequestShort) {
+        this.shortTimer = window.setTimeout(() => {
+          this.shortTimer = null
+          void this.requestAndRender('short', requestId)
+        }, config.getDebounceMs?.() ?? config.debounceMs ?? INLINE_COMPLETION_DEBOUNCE_MS)
+      }
+      if (shouldRequestLong) {
+        this.longTimer = window.setTimeout(() => {
+          this.longTimer = null
+          void this.requestAndRender('long', requestId)
+        }, config.getLongDebounceMs?.() ?? INLINE_LONG_COMPLETION_DEBOUNCE_MS)
+      }
+    }
 
-        const suggestion = await config.requestCompletion(latestContext).catch((error: unknown) => {
-          config.onError?.(error)
-          return null
+    private async requestAndRender(mode: WriteInlineCompletionMode, requestId: number): Promise<void> {
+      const latestState = this.view.state
+      const latestContext = buildRequestContext(latestState, config)
+      const shouldRequest = mode === 'long'
+        ? shouldRequestLongInlineCompletion(latestContext, config.isEnabled, config.isLongEnabled)
+        : shouldRequestInlineCompletion(latestContext, config.isEnabled)
+      if (!shouldRequest) {
+        clearInlineCompletion(this.view)
+        return
+      }
+
+      const suggestion = await config.requestCompletion(latestContext, mode).catch((error: unknown) => {
+        config.onError?.(error)
+        return null
+      })
+
+      if (requestId !== this.sequence) return
+      if (this.view.state !== latestState) return
+
+      const decision = evaluateInlineCompletionCandidate(latestContext, suggestion, {
+        minAcceptScore: mode === 'long'
+          ? config.getLongMinAcceptScore?.()
+          : config.getMinAcceptScore?.(),
+        mode
+      })
+      config.onFeedback?.(decision.feedback)
+      if (!decision.accepted) {
+        clearInlineCompletion(this.view)
+        return
+      }
+
+      this.view.dispatch({
+        effects: setInlineCompletionEffect.of({
+          text: decision.text,
+          anchor: latestContext.head,
+          feedback: decision.feedback
         })
+      })
+    }
 
-        if (requestId !== this.sequence) return
-        if (this.view.state !== latestState) return
-
-        const decision = evaluateInlineCompletionCandidate(latestContext, suggestion, {
-          minAcceptScore: config.getMinAcceptScore?.()
-        })
-        config.onFeedback?.(decision.feedback)
-        if (!decision.accepted) {
-          clearInlineCompletion(this.view)
-          return
-        }
-
-        this.view.dispatch({
-          effects: setInlineCompletionEffect.of({
-            text: decision.text,
-            anchor: latestContext.head,
-            feedback: decision.feedback
-          })
-        })
-      }, config.getDebounceMs?.() ?? config.debounceMs ?? INLINE_COMPLETION_DEBOUNCE_MS)
+    private clearTimers(): void {
+      if (this.shortTimer) window.clearTimeout(this.shortTimer)
+      if (this.longTimer) window.clearTimeout(this.longTimer)
+      this.shortTimer = null
+      this.longTimer = null
     }
 
     destroy(): void {
       this.sequence += 1
-      if (this.timer) window.clearTimeout(this.timer)
+      this.clearTimers()
     }
   })
 

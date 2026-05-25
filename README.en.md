@@ -40,7 +40,7 @@ The goal is not to ship another chat wrapper. The goal is to make DeepSeek feel 
 - **Managed runtime**: use the bundled DeepSeek TUI by default, or point the app at your own `deepseek` executable.
 - **Skill and MCP support**: create Skills, edit MCP config, add common tools, and open the related folders from the UI.
 - **Claw background automation**: run a background agent alongside normal chat, with current support for Feishu / Lark, IM webhook / relay flows, and scheduled tasks.
-- **Write mode**: manage `~/.deepseekgui/write_workspace` and custom writing spaces, browse Markdown files, use live Markdown editing, preview relative images, get DeepSeek FIM inline completion, and invoke the writing assistant directly from selected text.
+- **Write mode**: manage `~/.deepseekgui/write_workspace` and custom writing spaces, browse Markdown files, use live Markdown editing, preview relative images, get DeepSeek FIM short completion / inspiration completion with optional cross-document BM25 + keyword retrieval, and invoke the writing assistant directly from selected text.
 - **Friendly first launch**: choose language, add your DeepSeek API key, and optionally set a compatible Base URL.
 - **Local-first**: preferences, sessions, logs, and runtime config stay on your machine; model calls use your own DeepSeek API key.
 - **English and Chinese UI**: switch languages from Settings at any time.
@@ -122,7 +122,7 @@ If you want to use Write mode:
 - Switch to `Write`; the app uses `~/.deepseekgui/write_workspace` by default and prepares a welcome document.
 - Add multiple writing spaces from the left sidebar, then manage Markdown files, folders, renames, and deletion like a project tree.
 - The Markdown editor supports source/live/split/preview. Live mode keeps Markdown source visible on the active line and renders headings, task lists, images, and tables elsewhere.
-- Text completion calls the DeepSeek FIM Completion API directly, using the DeepSeek API key synced from Settings.
+- Text completion calls the DeepSeek FIM Completion API directly, using the DeepSeek API key synced from Settings. Short completion protects flow typing, while inspiration completion waits for a longer pause at a line end or paragraph boundary before offering a fuller next sentence or paragraph. By default, completion first runs BM25 + keyword retrieval across the active writing space and adds relevant snippets as reference-only context.
 - Selecting text opens an inline agent input so the selection can be sent to the right-side writing assistant as structured quoted context.
 
 ## Usage and Settings
@@ -154,7 +154,7 @@ Write mode extends DeepSeek GUI from a code/chat workbench into a long-form writ
 - Markdown live editing: openhanako inspired the CodeMirror decorations approach where the active line stays editable as Markdown source while inactive lines render headings, tasks, images, dividers, and tables through widgets.
 - Selection inline agent: openhanako inspired the selection-capture and floating-input interaction, so selected text can be sent with file path, line numbers, and bounded original text as structured context.
 - AI session isolation: Write still reuses normal DeepSeek TUI agent threads, but the GUI keeps a local write thread registry per writing space so write conversations do not pollute code/claw sidebars.
-- Text completion: writing completion bypasses the local TUI serve runtime and calls the DeepSeek FIM Completion API directly for low-latency ghost text.
+- Text completion: writing completion bypasses the local TUI serve runtime and calls the DeepSeek FIM Completion API directly for low-latency ghost text. Short completion uses a short debounce, small token budget, and strict local filtering; inspiration completion uses a longer pause, larger token budget, and only runs at line ends or paragraph boundaries. Before completion, the app builds a short-TTL lightweight index over Markdown / text files in the writing space, retrieves cross-document snippets with BM25 + keyword matching, and injects them as a hidden Markdown comment so terminology, facts, and style stay consistent.
 
 ---
 

@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react'
 
 export type ThreadUsageSummary = {
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  cachedTokens: number
+  cacheMissTokens: number
+  cacheHitRate: number | null
   totalTokens: number
   costUsd: number
   turns: number
@@ -16,6 +22,10 @@ function usageNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
+function hasFiniteNumber(record: Record<string, unknown>, key: string): boolean {
+  return typeof record[key] === 'number' && Number.isFinite(record[key])
+}
+
 export function formatCompactNumber(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
@@ -26,9 +36,56 @@ export function formatCost(value: number): string {
   return `$${value.toFixed(value >= 1 ? 2 : 4)}`
 }
 
+export function formatPercent(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '-'
+  const percent = Math.max(0, Math.min(100, value * 100))
+  if (percent === 0 || percent >= 10) return `${Math.round(percent)}%`
+  return `${percent.toFixed(1)}%`
+}
+
+type CacheStats = {
+  hitTokens: number
+  missTokens: number
+}
+
+async function loadThreadCacheStats(threadId: string): Promise<CacheStats | null> {
+  if (typeof window.dsGui?.runtimeRequest !== 'function') return null
+  const r = await window.dsGui.runtimeRequest(
+    `/v1/threads/${encodeURIComponent(threadId)}`,
+    'GET'
+  )
+  if (!r.ok || !r.body.trim()) return null
+  const parsed = JSON.parse(r.body) as {
+    turns?: Array<{ usage?: Record<string, unknown> | null }>
+  }
+  let hitTokens = 0
+  let missTokens = 0
+  let hasCacheTelemetry = false
+
+  for (const turn of parsed.turns ?? []) {
+    const usage = turn.usage
+    if (!usage || typeof usage !== 'object') continue
+    const hasHit = hasFiniteNumber(usage, 'prompt_cache_hit_tokens')
+    const hasMiss = hasFiniteNumber(usage, 'prompt_cache_miss_tokens')
+    if (!hasHit && !hasMiss) continue
+    hasCacheTelemetry = true
+    const hit = usageNumber(usage.prompt_cache_hit_tokens)
+    const miss = hasMiss
+      ? usageNumber(usage.prompt_cache_miss_tokens)
+      : Math.max(usageNumber(usage.input_tokens) - hit, 0)
+    hitTokens += hit
+    missTokens += miss
+  }
+
+  return hasCacheTelemetry ? { hitTokens, missTokens } : null
+}
+
 export async function loadThreadUsage(threadId: string): Promise<ThreadUsageSummary | null> {
   if (typeof window.dsGui?.runtimeRequest !== 'function') return null
-  const r = await window.dsGui.runtimeRequest('/v1/usage?group_by=thread', 'GET')
+  const [r, cacheStats] = await Promise.all([
+    window.dsGui.runtimeRequest('/v1/usage?group_by=thread', 'GET'),
+    loadThreadCacheStats(threadId).catch(() => null)
+  ])
   if (!r.ok || !r.body.trim()) return null
   const parsed = JSON.parse(r.body) as {
     buckets?: Array<Record<string, unknown>>
@@ -38,15 +95,33 @@ export async function loadThreadUsage(threadId: string): Promise<ThreadUsageSumm
     return candidates.some((candidate) => candidate === threadId)
   })
   if (!bucket) return null
-  const totalTokens =
-    usageNumber(bucket.input_tokens) +
-    usageNumber(bucket.output_tokens) +
-    usageNumber(bucket.cached_tokens) +
-    usageNumber(bucket.reasoning_tokens)
+  const inputTokens = usageNumber(bucket.input_tokens)
+  const outputTokens = usageNumber(bucket.output_tokens)
+  const reasoningTokens = usageNumber(bucket.reasoning_tokens)
+  const cachedTokens = cacheStats?.hitTokens ?? usageNumber(bucket.cached_tokens)
+  const cacheMissTokens = cacheStats?.missTokens ?? Math.max(inputTokens - cachedTokens, 0)
+  const cacheTotal = cachedTokens + cacheMissTokens
+  const cacheHitRate =
+    cacheTotal > 0
+      ? cachedTokens / cacheTotal
+      : inputTokens > 0
+        ? cachedTokens / inputTokens
+        : null
+  const totalTokens = inputTokens + outputTokens
   const costUsd = usageNumber(bucket.cost_usd)
   const turns = usageNumber(bucket.turns)
-  if (totalTokens <= 0 && costUsd <= 0 && turns <= 0) return null
-  return { totalTokens, costUsd, turns }
+  if (totalTokens <= 0 && cachedTokens <= 0 && costUsd <= 0 && turns <= 0) return null
+  return {
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    cachedTokens,
+    cacheMissTokens,
+    cacheHitRate,
+    totalTokens,
+    costUsd,
+    turns
+  }
 }
 
 export function useThreadUsageState(

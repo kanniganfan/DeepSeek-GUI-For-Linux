@@ -21,6 +21,7 @@ export function threadBelongsToWorkspace(
 
 export function hasPendingRuntimeWork(block: ChatBlock): boolean {
   if (block.kind === 'tool') return block.status === 'running'
+  if (block.kind === 'compaction') return block.status === 'running'
   if (block.kind === 'approval') return block.status === 'pending'
   if (block.kind === 'user_input') return block.status === 'pending'
   return false

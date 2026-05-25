@@ -1,10 +1,12 @@
 import { create } from 'zustand'
 import type {
+  ChatBlock,
   NormalizedThread,
   ThreadDeltaEvent,
   ThreadEventSink,
   ToolEventPayload,
-  ToolBlock
+  ToolBlock,
+  CompactionBlock
 } from '../agent/types'
 import { getProvider } from '../agent/registry'
 import i18n from '../i18n'
@@ -16,6 +18,15 @@ import {
   getDefaultThreadTitle,
   shouldAutoTitleThread
 } from '../lib/thread-title'
+import { filterThreadsForSidebar } from '../lib/thread-sidebar-visibility'
+import {
+  enrichThreadsWithForkInfo,
+  forgetThreadFork,
+  hydrateThreadForkRegistry,
+  markThreadFork,
+  readThreadForkRegistry,
+  saveThreadForkRegistry
+} from '../lib/thread-fork-registry'
 import { workspaceLabelFromPath } from '../lib/workspace-label'
 import { isClawWorkspacePath, isInternalTemporaryWorkspace, normalizeWorkspaceRoot } from '../lib/workspace-path'
 import {
@@ -56,8 +67,10 @@ import {
   upsertUserBlock
 } from './chat-store-runtime-helpers'
 import {
+  WRITE_ASSISTANT_THREAD_TITLE,
   activeWriteThreadForWorkspace,
   forgetWriteThread,
+  hydrateWriteThreadRegistry,
   isWriteThreadId,
   markWriteThread,
   pruneWriteThreadRegistry,
@@ -91,6 +104,8 @@ let composerModelLoadPromise: Promise<void> | null = null
 let bootPromise: Promise<void> | null = null
 const BUSY_WATCHDOG_MS = 180_000
 const MAX_BUSY_RECOVERY_ATTEMPTS = 3
+const MAX_RUNTIME_EVENT_TIMER_AGE_MS = 30 * 60_000
+const CLOCK_SKEW_TOLERANCE_MS = 5_000
 let drainingQueuedMessages = false
 let clawChannelActivityUnsubscribe: (() => void) | null = null
 const pendingClawFeishuMirrors = new Map<
@@ -101,7 +116,6 @@ const COMPLETION_NOTIFICATION_DEDUPE_LIMIT = 200
 const completionNotificationKeys: string[] = []
 const completionNotificationKeySet = new Set<string>()
 const watchCompletionNotificationKeys = new Map<string, string>()
-const WRITE_THREAD_TITLE = 'Write Assistant'
 
 async function readActiveWriteWorkspace(fallbackWorkspaceRoot: string): Promise<string> {
   try {
@@ -117,8 +131,41 @@ async function readActiveWriteWorkspace(fallbackWorkspaceRoot: string): Promise<
   }
 }
 
+async function readWriteWorkspaceRoots(): Promise<string[]> {
+  try {
+    const settings = await window.dsGui.getSettings()
+    const roots = [
+      settings.write.defaultWorkspaceRoot,
+      settings.write.activeWorkspaceRoot,
+      ...settings.write.workspaces
+    ]
+      .map((workspaceRoot) => normalizeWorkspaceRoot(workspaceRoot))
+      .filter(Boolean)
+    return [...new Set(roots)]
+  } catch {
+    return []
+  }
+}
+
 function runtimeErrorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? '')
+}
+
+function runtimeEventStartedAt(createdAt: string | undefined, now = Date.now()): number {
+  if (!createdAt) return now
+  const parsed = Date.parse(createdAt)
+  if (!Number.isFinite(parsed)) return now
+  if (parsed > now + CLOCK_SKEW_TOLERANCE_MS) return now
+  if (now - parsed > MAX_RUNTIME_EVENT_TIMER_AGE_MS) return now
+  return parsed
+}
+
+function forkedMessageCount(blocks: ChatBlock[]): number {
+  return blocks.filter((block) => block.kind === 'user' || block.kind === 'assistant').length
+}
+
+function forkedTurnCount(blocks: ChatBlock[]): number {
+  return blocks.filter((block) => block.kind === 'user').length
 }
 
 function rememberCompletionNotificationKey(key: string): boolean {
@@ -267,7 +314,8 @@ function notifyWriteWorkspaceFileRefresh(
   if (hasCandidate && candidatePath !== activeFilePath) return
   void useWriteWorkspaceStore.getState().syncActiveFileFromDisk(workspaceRoot, {
     path: activeFilePath,
-    animate: true
+    animate: true,
+    force: true
   })
 }
 
@@ -348,10 +396,7 @@ function buildThreadEventSink(
               )
             : baseBlocks
         const nextBlocks = upsertUserBlock(reconciledBlocks, ev)
-        const startedAt =
-          typeof ev.createdAt === 'string' && Number.isFinite(Date.parse(ev.createdAt))
-            ? Date.parse(ev.createdAt)
-            : Date.now()
+        const startedAt = runtimeEventStartedAt(ev.createdAt)
         armBusyWatchdog(set, get)
         return {
           ...flushed,
@@ -469,6 +514,57 @@ function buildThreadEventSink(
           detail: ev.detail,
           filePath: ev.filePath,
           meta: ev.meta
+        }
+        return {
+          ...base,
+          ...flushed,
+          blocks: [...baseBlocks, block],
+          error: s.error === i18n.t('common:runtimeStreamRecovering') ? null : s.error
+        }
+      })
+    },
+    onCompaction: (ev) => {
+      set((s) => {
+        resetBusyRecoveryAttempts()
+        const base: Partial<ChatState> = {}
+        if (!s.busy && ev.status === 'running') {
+          base.busy = true
+          armBusyWatchdog(set, get)
+        }
+        const idx = s.blocks.findIndex((b) => b.kind === 'compaction' && b.id === ev.itemId)
+        if (idx >= 0) {
+          const cur = s.blocks[idx]
+          if (cur.kind !== 'compaction') return { ...base }
+          const next: CompactionBlock = {
+            ...cur,
+            summary: ev.summary || cur.summary,
+            status: ev.status,
+            detail: ev.detail ?? cur.detail,
+            auto: ev.auto ?? cur.auto,
+            messagesBefore: ev.messagesBefore ?? cur.messagesBefore,
+            messagesAfter: ev.messagesAfter ?? cur.messagesAfter,
+            createdAt: cur.createdAt ?? ev.createdAt
+          }
+          const blocks = [...s.blocks]
+          blocks[idx] = next
+          return {
+            ...base,
+            blocks,
+            error: s.error === i18n.t('common:runtimeStreamRecovering') ? null : s.error
+          }
+        }
+        const flushed = flushLiveBlocks(s)
+        const baseBlocks = flushed.blocks ?? s.blocks
+        const block: CompactionBlock = {
+          kind: 'compaction',
+          id: ev.itemId,
+          createdAt: ev.createdAt ?? new Date().toISOString(),
+          summary: ev.summary,
+          status: ev.status,
+          detail: ev.detail,
+          auto: ev.auto,
+          messagesBefore: ev.messagesBefore,
+          messagesAfter: ev.messagesAfter
         }
         return {
           ...base,
@@ -742,9 +838,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   openWrite: async () => {
     const state = get()
     const selectedWorkspace = await readActiveWriteWorkspace(state.workspaceRoot)
-    const registry = pruneWriteThreadRegistry(
-      state.threads.filter((thread) => thread.archived !== true),
-      readWriteThreadRegistry()
+    const writeWorkspaceRoots = await readWriteWorkspaceRoots()
+    const registry = hydrateWriteThreadRegistry(
+      state.threads,
+      selectedWorkspace ? [selectedWorkspace, ...writeWorkspaceRoots] : writeWorkspaceRoots,
+      pruneWriteThreadRegistry(state.threads, readWriteThreadRegistry())
     )
     saveWriteThreadRegistry(registry)
     const activeThread = state.activeThreadId
@@ -800,7 +898,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return null
     }
 
-    const registry = pruneWriteThreadRegistry(state.threads, readWriteThreadRegistry())
+    const registry = hydrateWriteThreadRegistry(
+      state.threads,
+      [targetWorkspace],
+      pruneWriteThreadRegistry(state.threads, readWriteThreadRegistry())
+    )
     saveWriteThreadRegistry(registry)
     const activeThread = state.activeThreadId
       ? state.threads.find((thread) => thread.id === state.activeThreadId) ?? null
@@ -834,7 +936,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const p = getProvider(get().providerId)
       const thread = await p.createThread({
         workspace: targetWorkspace,
-        title: WRITE_THREAD_TITLE,
+        title: WRITE_ASSISTANT_THREAD_TITLE,
         mode: 'agent'
       })
       saveWriteThreadRegistry(markWriteThread(targetWorkspace, thread.id))
@@ -1150,20 +1252,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ...thread,
         workspace: normalizeWorkspaceRoot(thread.workspace)
       }))
-      saveWriteThreadRegistry(
-        pruneWriteThreadRegistry(
-          threads.filter((thread) => thread.archived !== true),
-          readWriteThreadRegistry()
-        )
+      const sidebarThreads = await filterThreadsForSidebar(threads, p)
+      const forkRegistry = hydrateThreadForkRegistry(sidebarThreads, readThreadForkRegistry())
+      saveThreadForkRegistry(forkRegistry)
+      const displayThreads = enrichThreadsWithForkInfo(sidebarThreads, forkRegistry)
+      const writeWorkspaceRoots = await readWriteWorkspaceRoots()
+      const writeRegistry = hydrateWriteThreadRegistry(
+        displayThreads,
+        writeWorkspaceRoots,
+        pruneWriteThreadRegistry(displayThreads, readWriteThreadRegistry())
       )
+      saveWriteThreadRegistry(writeRegistry)
       const activeThreadId = get().activeThreadId
+      const activeThreadIsWriteInCodeRoute =
+        get().route === 'chat' && activeThreadId != null && isWriteThreadId(activeThreadId, writeRegistry)
       const shouldClearSelection =
-        activeThreadId != null && !threads.some((thread) => thread.id === activeThreadId)
+        activeThreadId != null && !displayThreads.some((thread) => thread.id === activeThreadId)
       if (shouldClearSelection) {
         sseAbort?.abort()
         sseAbort = null
       }
-      const validIds = new Set(threads.map((t) => t.id))
+      const validIds = new Set(displayThreads.map((t) => t.id))
       set((s) => {
         const w: Record<string, boolean> = {}
         for (const [k, v] of Object.entries(s.watchTurnCompletion)) {
@@ -1178,13 +1287,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (v && validIds.has(k)) u[k] = true
         }
         return {
-          threads,
+          threads: displayThreads,
           watchTurnCompletion: w,
           unreadThreadIds: u,
           ...(shouldClearSelection ? clearedThreadSelection() : {})
         }
       })
       syncTurnCompletionPoll(set, get)
+      if (activeThreadIsWriteInCodeRoute) {
+        await get().openCode()
+      }
     } catch (e) {
       stopTurnCompletionPoll()
       set({
@@ -1271,7 +1383,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         latestSeq,
         threadStatus,
         latestTurnId,
-        latestUserMessageId
+        latestUserMessageId,
+        turnDurationByUserId = {}
       } = await p.getThreadDetail(activeThreadId)
       const blocks = hydrateBlockModelLabels(activeThreadId, rawBlocks)
       const busy = threadSnapshotLooksRunning(blocks, threadStatus)
@@ -1290,6 +1403,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         busy,
         currentTurnId,
         currentTurnUserId,
+        turnDurationByUserId,
         queuedMessages: s.queuedMessages
       }))
 
@@ -1346,7 +1460,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         latestSeq,
         threadStatus,
         latestTurnId,
-        latestUserMessageId
+        latestUserMessageId,
+        turnDurationByUserId = {}
       } = await p.getThreadDetail(id)
       const blocks = hydrateBlockModelLabels(id, rawBlocks)
       const busy = threadSnapshotLooksRunning(blocks, threadStatus)
@@ -1366,7 +1481,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         currentTurnId: busy ? latestTurnId ?? null : null,
         currentTurnUserId,
         turnStartedAtByUserId: {},
-        turnDurationByUserId: {},
+        turnDurationByUserId,
         turnReasoningFirstAtByUserId: {},
         turnReasoningLastAtByUserId: {},
         inspectorSelectedId: null,
@@ -1811,7 +1926,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   forkActiveThread: async () => {
-    const { activeThreadId, providerId, busy } = get()
+    const { activeThreadId, providerId, busy, blocks } = get()
     if (!activeThreadId) return
     if (busy) {
       set({ error: i18n.t('common:threadActionBusy') })
@@ -1827,7 +1942,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
     try {
+      const parentThread =
+        get().threads.find((thread) => thread.id === activeThreadId) ?? {
+          id: activeThreadId,
+          title: activeThreadId.slice(0, 8)
+        }
       const forked = await p.forkThread(activeThreadId)
+      saveThreadForkRegistry(
+        markThreadFork(
+          forked.id,
+          parentThread,
+          {
+            createdAt: forked.forkedAt ?? new Date().toISOString(),
+            forkedFromMessageCount: forked.forkedFromMessageCount ?? forkedMessageCount(blocks),
+            forkedFromTurnCount: forked.forkedFromTurnCount ?? forkedTurnCount(blocks)
+          },
+          readThreadForkRegistry()
+        )
+      )
       await get().refreshThreads()
       await get().selectThread(forked.id)
     } catch (e) {
@@ -1881,6 +2013,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await p.deleteThread(targetId)
       saveWriteThreadRegistry(forgetWriteThread(targetId))
+      saveThreadForkRegistry(forgetThreadFork(targetId))
       if (deletingActive) {
         sseAbort?.abort()
         sseAbort = null

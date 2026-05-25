@@ -115,7 +115,7 @@ export function WorkbenchTopBar({
   }
 
   return (
-    <div className="ds-no-drag flex shrink-0 items-center justify-end gap-1">
+    <div className="chat-workbench-topbar ds-no-drag flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1">
       <div ref={editorMenuRef} className="relative">
         <button
           type="button"

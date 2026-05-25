@@ -24,12 +24,15 @@ describe('JsonSettingsStore', () => {
     expect(loaded.write.defaultWorkspaceRoot).toContain('.deepseekgui')
     expect(loaded.write.workspaces).toContain(loaded.write.defaultWorkspaceRoot)
     expect(loaded.write.inlineCompletion.enabled).toBe(true)
+    expect(loaded.write.inlineCompletion.retrievalEnabled).toBe(true)
+    expect(loaded.write.inlineCompletion.longCompletionEnabled).toBe(true)
     expect(loaded.write.inlineCompletion.baseUrl).toBe('https://api.deepseek.com/beta')
     expect(loaded.write.inlineCompletion.model).toBe('deepseek-v4-flash')
+    expect(loaded.write.inlineCompletion.longMaxTokens).toBe(256)
     expect(await readFile(join(loaded.write.defaultWorkspaceRoot, 'welcome.md'), 'utf8')).toContain('Welcome to Write')
   })
 
-  it('migrates the legacy write completion default to flash', async () => {
+  it('preserves the pro write completion model', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
 
     await writeFile(
@@ -48,7 +51,7 @@ describe('JsonSettingsStore', () => {
     const store = new JsonSettingsStore(userDataDir)
     const loaded = await store.load()
 
-    expect(loaded.write.inlineCompletion.model).toBe('deepseek-v4-flash')
+    expect(loaded.write.inlineCompletion.model).toBe('deepseek-v4-pro')
   })
 
   it('preserves deepseek.autoStart=false when loading saved settings', async () => {

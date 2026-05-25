@@ -1,16 +1,20 @@
 import {
   INLINE_COMPLETION_MAX_VISIBLE_CHARS,
   INLINE_COMPLETION_MAX_VISIBLE_LINES,
-  INLINE_COMPLETION_MIN_ACCEPT_SCORE
+  INLINE_COMPLETION_MIN_ACCEPT_SCORE,
+  INLINE_LONG_COMPLETION_MAX_VISIBLE_CHARS,
+  INLINE_LONG_COMPLETION_MAX_VISIBLE_LINES,
+  INLINE_LONG_COMPLETION_MIN_ACCEPT_SCORE
 } from './constants'
 import type {
   InlineCompletionFeedback,
   InlineCompletionRequestContext,
   InlineCompletionSuggestion
 } from './types'
+import type { WriteInlineCompletionMode } from '@shared/write-inline-completion'
 
 function sanitizeText(text = ''): string {
-  return String(text || '').replace(/\r\n?/g, '\n').replace(/\u0000/g, '')
+  return String(text || '').replace(/\r\n?/g, '\n').replaceAll(String.fromCharCode(0), '')
 }
 
 function compactText(text = ''): string {
@@ -82,9 +86,13 @@ function genericPenalty(context: InlineCompletionRequestContext, text: string): 
   return 0
 }
 
-function lengthPenalty(text = ''): number {
+function lengthPenalty(text = '', mode: WriteInlineCompletionMode = 'short'): number {
   const charCount = sanitizeText(text).length
   const lineCount = sanitizeText(text).split('\n').length
+  if (mode === 'long') {
+    if (charCount > 760 || lineCount > 10) return 0.08
+    return 0
+  }
   if (charCount > 140 || lineCount > 3) return 0.14
   return 0
 }
@@ -111,7 +119,8 @@ function reject(
   reason: string,
   context: InlineCompletionRequestContext,
   text = '',
-  score = 0
+  score = 0,
+  mode: WriteInlineCompletionMode = 'short'
 ): {
   accepted: false
   text: ''
@@ -126,6 +135,7 @@ function reject(
       reason,
       score,
       preview: clipPreview(text),
+      mode,
       cursor: {
         line: context.lineNumber,
         column: context.column
@@ -137,51 +147,67 @@ function reject(
 export function evaluateInlineCompletionCandidate(
   context: InlineCompletionRequestContext,
   suggestion: InlineCompletionSuggestion | string | null,
-  options: { minAcceptScore?: number } = {}
+  options: {
+    minAcceptScore?: number
+    longMinAcceptScore?: number
+    mode?: WriteInlineCompletionMode
+  } = {}
 ): {
   accepted: boolean
   text: string
   feedback: InlineCompletionFeedback
 } {
   const text = sanitizeText(typeof suggestion === 'string' ? suggestion : suggestion?.text ?? '')
+  const mode = options.mode ?? (typeof suggestion === 'string' ? 'short' : suggestion?.mode) ?? 'short'
   const minAcceptScore = Number.isFinite(options.minAcceptScore)
     ? Number(options.minAcceptScore)
-    : INLINE_COMPLETION_MIN_ACCEPT_SCORE
-  if (!text) return reject('empty-candidate', context, text, 0)
+    : mode === 'long'
+      ? INLINE_LONG_COMPLETION_MIN_ACCEPT_SCORE
+      : INLINE_COMPLETION_MIN_ACCEPT_SCORE
+  const effectiveMinAcceptScore = mode === 'long' && Number.isFinite(options.longMinAcceptScore)
+    ? Number(options.longMinAcceptScore)
+    : minAcceptScore
+  if (!text) return reject('empty-candidate', context, text, 0, mode)
   if (!compactText(text) && !usefulSingleToken(text, context)) {
-    return reject('blank-candidate', context, text, 0)
+    return reject('blank-candidate', context, text, 0, mode)
   }
 
   const charCount = text.length
   const lineCount = text.split('\n').length
-  if (charCount > INLINE_COMPLETION_MAX_VISIBLE_CHARS) {
-    return reject('too-long', context, text, 0.08)
+  const maxVisibleChars = mode === 'long'
+    ? INLINE_LONG_COMPLETION_MAX_VISIBLE_CHARS
+    : INLINE_COMPLETION_MAX_VISIBLE_CHARS
+  const maxVisibleLines = mode === 'long'
+    ? INLINE_LONG_COMPLETION_MAX_VISIBLE_LINES
+    : INLINE_COMPLETION_MAX_VISIBLE_LINES
+  if (charCount > maxVisibleChars) {
+    return reject('too-long', context, text, 0.08, mode)
   }
-  if (lineCount > INLINE_COMPLETION_MAX_VISIBLE_LINES) {
-    return reject('too-many-lines', context, text, 0.08)
+  if (lineCount > maxVisibleLines) {
+    return reject('too-many-lines', context, text, 0.08, mode)
   }
 
   const duplicatePenalty = redundancyPenalty(context, text)
   if (duplicatePenalty >= 1) {
-    return reject('already-in-suffix', context, text, 0.05)
+    return reject('already-in-suffix', context, text, 0.05, mode)
   }
 
   const boundaryPenalty = sentenceBoundaryPenalty(context, text)
   if (boundaryPenalty >= 0.4) {
-    return reject('sentence-boundary', context, text, 0.04)
+    return reject('sentence-boundary', context, text, 0.04, mode)
   }
 
-  let score = 0.34
+  let score = mode === 'long' ? 0.4 : 0.34
   score += continuityBoost(context, text)
   score += structuralBoost(context, text)
   score += paragraphStartBoost(context, text)
   score -= duplicatePenalty
   score -= boundaryPenalty
   score -= genericPenalty(context, text)
-  score -= lengthPenalty(text)
+  score -= lengthPenalty(text, mode)
 
-  if (score < minAcceptScore) {
-    return reject('low-confidence', context, text, Number(score.toFixed(2)))
+  if (score < effectiveMinAcceptScore) {
+    return reject('low-confidence', context, text, Number(score.toFixed(2)), mode)
   }
 
   return {
@@ -193,6 +219,7 @@ export function evaluateInlineCompletionCandidate(
       reason: 'high-confidence',
       score: Number(score.toFixed(2)),
       preview: clipPreview(text),
+      mode,
       cursor: {
         line: context.lineNumber,
         column: context.column

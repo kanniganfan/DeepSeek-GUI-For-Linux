@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   defaultClawSettings,
   defaultWriteSettings,
   type AppSettingsV1
 } from '../../shared/app-settings'
 import type { WriteInlineCompletionRequest } from '../../shared/write-inline-completion'
-import { requestWriteInlineCompletion } from './write-inline-completion-service'
+import {
+  buildWriteInlineCompletionPrompt,
+  requestWriteInlineCompletion
+} from './write-inline-completion-service'
+import { clearWriteRetrievalCache } from './write-retrieval-service'
 
 function createSettings(patch: Partial<AppSettingsV1['write']['inlineCompletion']> = {}): AppSettingsV1 {
   const write = defaultWriteSettings()
@@ -93,6 +100,7 @@ function createRequest(): WriteInlineCompletionRequest {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  clearWriteRetrievalCache()
 })
 
 describe('requestWriteInlineCompletion', () => {
@@ -110,7 +118,8 @@ describe('requestWriteInlineCompletion', () => {
     expect(result).toEqual({
       ok: true,
       completion: ' only a test',
-      model: 'deepseek-v4-flash'
+      model: 'deepseek-v4-flash',
+      mode: 'short'
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
@@ -137,7 +146,7 @@ describe('requestWriteInlineCompletion', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('normalizes the legacy completion default to the flash model', async () => {
+  it('preserves an explicit pro completion model', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ choices: [{ text: ' flash text' }] }), {
         status: 200,
@@ -154,11 +163,107 @@ describe('requestWriteInlineCompletion', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      model: 'deepseek-v4-flash'
+      model: 'deepseek-v4-pro'
     })
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(JSON.parse(String(init.body))).toMatchObject({
-      model: 'deepseek-v4-flash'
+      model: 'deepseek-v4-pro'
     })
+  })
+
+  it('uses the long-completion prompt and token budget for inspiration mode', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ choices: [{ text: '\n\nA longer continuation.' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const request = {
+      ...createRequest(),
+      mode: 'long' as const,
+      suffix: '',
+      context: {
+        ...createRequest().context,
+        currentLineSuffix: ''
+      }
+    }
+    const result = await requestWriteInlineCompletion(
+      createSettings({ longMaxTokens: 320 }),
+      request
+    )
+
+    expect(result).toMatchObject({
+      ok: true,
+      mode: 'long'
+    })
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const body = JSON.parse(String(init.body)) as { prompt: string; max_tokens: number }
+    expect(body.max_tokens).toBe(320)
+    expect(body.prompt).toContain('inline completion mode: long inspiration')
+    expect(body.prompt.endsWith(request.prefix)).toBe(true)
+  })
+
+  it('adds BM25 retrieval snippets to the FIM prompt when workspace context is available', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'ds-gui-write-rag-'))
+    await mkdir(join(workspaceRoot, 'notes'), { recursive: true })
+    await writeFile(
+      join(workspaceRoot, 'notes', 'retrieval.md'),
+      [
+        '# RAG notes',
+        '',
+        'BM25 keyword retrieval keeps inline completion grounded in project terminology.',
+        'Use retrieved snippets as reference-only context for local text completion.'
+      ].join('\n'),
+      'utf8'
+    )
+    await writeFile(
+      join(workspaceRoot, 'draft.md'),
+      '# Draft\n\nBM25 keyword',
+      'utf8'
+    )
+
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ choices: [{ text: ' retrieval can improve continuity' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const request = {
+      ...createRequest(),
+      workspaceRoot,
+      currentFilePath: join(workspaceRoot, 'draft.md'),
+      prefix: '# Draft\n\nBM25 keyword',
+      suffix: '',
+      context: {
+        ...createRequest().context,
+        currentLinePrefix: 'BM25 keyword',
+        currentLineSuffix: '',
+        previousNonEmptyLine: '# Draft'
+      },
+      preview: {
+        local: 'BM25 keyword',
+        documentTail: '# Draft BM25 keyword'
+      }
+    }
+
+    const result = await requestWriteInlineCompletion(createSettings(), request)
+
+    expect(result).toMatchObject({ ok: true })
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const body = JSON.parse(String(init.body)) as { prompt: string }
+    expect(body.prompt).toContain('DeepSeek GUI inline completion references')
+    expect(body.prompt).toContain('notes/retrieval.md')
+    expect(body.prompt).toContain('BM25 keyword retrieval keeps inline completion grounded')
+    expect(body.prompt.endsWith(request.prefix)).toBe(true)
+  })
+
+  it('leaves the prompt untouched when retrieval has no snippets', () => {
+    const request = createRequest()
+
+    expect(buildWriteInlineCompletionPrompt(request, null)).toBe(request.prefix)
   })
 })

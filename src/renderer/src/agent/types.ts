@@ -32,6 +32,11 @@ export type NormalizedThread = {
   preview?: string
   latestTurnId?: string
   latestTurnStatus?: string
+  forkedFromThreadId?: string
+  forkedFromTitle?: string
+  forkedAt?: string
+  forkedFromMessageCount?: number
+  forkedFromTurnCount?: number
 }
 
 export type RuntimeConnectionStatus = 'idle' | 'checking' | 'ready' | 'offline'
@@ -59,11 +64,24 @@ export type ToolBlock = {
   meta?: Record<string, unknown>
 }
 
+export type CompactionBlock = {
+  kind: 'compaction'
+  id: string
+  createdAt?: string
+  summary: string
+  status: 'running' | 'success' | 'error'
+  detail?: string
+  auto?: boolean
+  messagesBefore?: number
+  messagesAfter?: number
+}
+
 export type ChatBlock =
   | { kind: 'user'; id: string; createdAt?: string; text: string; modelLabel?: string }
   | { kind: 'assistant'; id: string; createdAt?: string; text: string }
   | { kind: 'reasoning'; id: string; createdAt?: string; text: string }
   | ToolBlock
+  | CompactionBlock
   | { kind: 'system'; id: string; createdAt?: string; text: string }
   | {
       kind: 'approval'
@@ -102,6 +120,17 @@ export type ToolEventPayload = {
   meta?: Record<string, unknown>
 }
 
+export type CompactionEventPayload = {
+  itemId: string
+  summary: string
+  status: 'running' | 'success' | 'error'
+  detail?: string
+  auto?: boolean
+  messagesBefore?: number
+  messagesAfter?: number
+  createdAt?: string
+}
+
 export type UserInputRequestPayload = {
   itemId: string
   requestId: string
@@ -134,6 +163,7 @@ export type ThreadEventSink = {
   onDeltas(deltas: ThreadDeltaEvent[]): void
   onUserMessage(ev: UserMessageEventPayload): void
   onTool(ev: ToolEventPayload): void
+  onCompaction(ev: CompactionEventPayload): void
   onApproval(req: ApprovalRequestPayload): void
   onUserInput(req: UserInputRequestPayload): void
   onUserInputStatus(ev: UserInputStatusPayload): void
@@ -159,6 +189,7 @@ export interface AgentProvider {
     threadStatus?: string
     latestTurnId?: string
     latestUserMessageId?: string
+    turnDurationByUserId?: Record<string, number>
   }>
   sendUserMessage(
     threadId: string,

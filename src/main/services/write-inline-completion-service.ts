@@ -7,9 +7,14 @@ import {
 } from '../../shared/app-settings'
 import { upstreamDeepSeekFimCompletionsUrl } from '../../shared/openai-compat-url'
 import type {
+  WriteInlineCompletionMode,
   WriteInlineCompletionRequest,
   WriteInlineCompletionResult
 } from '../../shared/write-inline-completion'
+import {
+  retrieveWriteInlineCompletionContext,
+  type WriteRetrievalContext
+} from './write-retrieval-service'
 
 const INLINE_COMPLETION_TIMEOUT_MS = 12_000
 
@@ -27,6 +32,10 @@ function resolveModel(request: WriteInlineCompletionRequest, settings: AppSettin
   return normalizeWriteInlineCompletionModel(trimmed || DEFAULT_WRITE_INLINE_COMPLETION_MODEL)
 }
 
+function resolveMode(request: WriteInlineCompletionRequest): WriteInlineCompletionMode {
+  return request.mode === 'long' ? 'long' : 'short'
+}
+
 function flattenMessageContent(
   content: string | Array<{ type?: string; text?: string }> | undefined
 ): string {
@@ -38,7 +47,7 @@ function flattenMessageContent(
 }
 
 function cleanCompletionText(raw: string): string {
-  const normalized = raw.replace(/\r\n?/g, '\n').replace(/\u0000/g, '')
+  const normalized = raw.replace(/\r\n?/g, '\n').replaceAll(String.fromCharCode(0), '')
   const trimmed = normalized.trim()
   if (!trimmed) return ''
 
@@ -51,6 +60,60 @@ function cleanCompletionText(raw: string): string {
     return trimmed.slice(1, -1)
   }
   return normalized
+}
+
+function sanitizePromptLine(text = ''): string {
+  return String(text || '').replace(/\r\n?/g, '\n').replace(/-->/g, '--\\>')
+}
+
+function buildCompletionModePromptPrefix(mode: WriteInlineCompletionMode): string {
+  if (mode !== 'long') return ''
+  return [
+    '<!-- DeepSeek GUI inline completion mode: long inspiration.',
+    'The user paused at the cursor. Continue the draft with a grounded next thought, usually one compact paragraph or a short structural continuation.',
+    'Return only insertable text. Do not mention this comment, do not summarize the document, and do not take over the whole draft.',
+    '-->',
+    ''
+  ].join('\n')
+}
+
+function buildRetrievalPromptPrefix(
+  retrieval: WriteRetrievalContext,
+  mode: WriteInlineCompletionMode
+): string {
+  const lines = [
+    '<!-- DeepSeek GUI inline completion references.',
+    'Use these snippets only for local terminology, factual continuity, and style. Do not insert or mention this comment.',
+    `Completion mode: ${mode}.`,
+    `Retrieval: ${retrieval.source}; indexed ${retrieval.indexedFiles} files / ${retrieval.indexedChunks} chunks.`,
+    `Query keywords: ${retrieval.keywords.join(', ')}`
+  ]
+
+  retrieval.snippets.forEach((snippet, index) => {
+    const location = snippet.lineStart === snippet.lineEnd
+      ? `${snippet.path}:${snippet.lineStart}`
+      : `${snippet.path}:${snippet.lineStart}-${snippet.lineEnd}`
+    lines.push('')
+    lines.push(`[${index + 1}] ${location}`)
+    if (snippet.title) lines.push(`Title: ${sanitizePromptLine(snippet.title)}`)
+    lines.push(`Matched: ${snippet.keywords.join(', ')}`)
+    lines.push(sanitizePromptLine(snippet.text))
+  })
+
+  lines.push('-->')
+  return `${lines.join('\n')}\n\n`
+}
+
+export function buildWriteInlineCompletionPrompt(
+  request: WriteInlineCompletionRequest,
+  retrieval: WriteRetrievalContext | null = null
+): string {
+  const mode = resolveMode(request)
+  const modePrefix = buildCompletionModePromptPrefix(mode)
+  const retrievalPrefix = retrieval?.snippets.length
+    ? buildRetrievalPromptPrefix(retrieval, mode)
+    : ''
+  return `${modePrefix}${retrievalPrefix}${request.prefix}`
 }
 
 function extractCompletion(responseText: string): string {
@@ -80,10 +143,19 @@ export async function requestWriteInlineCompletion(
   }
 
   const model = resolveModel(request, settings)
+  const mode = resolveMode(request)
   const url = upstreamDeepSeekFimCompletionsUrl(
     settings.write.inlineCompletion.baseUrl.trim() || DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL
   )
-  const maxTokens = settings.write.inlineCompletion.maxTokens || DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS
+  const maxTokens = mode === 'long'
+    ? settings.write.inlineCompletion.longMaxTokens || settings.write.inlineCompletion.maxTokens || DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS
+    : settings.write.inlineCompletion.maxTokens || DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS
+  const retrieval = settings.write.inlineCompletion.retrievalEnabled === false
+    ? null
+    : await retrieveWriteInlineCompletionContext(request, {
+        maxSnippets: mode === 'long' ? 5 : 3
+      }).catch(() => null)
+  const prompt = buildWriteInlineCompletionPrompt(request, retrieval)
 
   try {
     const response = await fetch(url, {
@@ -95,7 +167,7 @@ export async function requestWriteInlineCompletion(
       },
       body: JSON.stringify({
         model,
-        prompt: request.prefix,
+        prompt,
         suffix: request.suffix,
         max_tokens: maxTokens
       }),
@@ -112,7 +184,8 @@ export async function requestWriteInlineCompletion(
     return {
       ok: true,
       completion: extractCompletion(text),
-      model
+      model,
+      mode
     }
   } catch (error) {
     return {

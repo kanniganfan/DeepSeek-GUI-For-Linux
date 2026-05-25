@@ -245,6 +245,19 @@ function formatCost(value: unknown): string {
   return `$${numberValue(value).toFixed(4)}`
 }
 
+function cacheHitRate(value: UsageTotals): number | null {
+  const input = numberValue(value.input_tokens)
+  if (input <= 0) return null
+  return numberValue(value.cached_tokens) / input
+}
+
+function formatPercent(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '-'
+  const percent = Math.max(0, Math.min(100, value * 100))
+  if (percent === 0 || percent >= 10) return `${Math.round(percent)}%`
+  return `${percent.toFixed(1)}%`
+}
+
 function formatTime(value: string | null | undefined, locale: string): string {
   if (!value) return '-'
   const date = new Date(value)
@@ -651,10 +664,11 @@ export function RuntimeInsightsPanel({ className = '', onCollapse }: Props): Rea
             </div>
             <StatusPill value={`${formatCount(usageTotals.turns)} ${t('runtimePanelTurns')}`} />
           </div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <MiniStat label={t('runtimePanelInputTokens')} value={formatCount(usageTotals.input_tokens)} />
             <MiniStat label={t('runtimePanelOutputTokens')} value={formatCount(usageTotals.output_tokens)} />
             <MiniStat label={t('runtimePanelCachedTokens')} value={formatCount(usageTotals.cached_tokens)} />
+            <MiniStat label={t('runtimePanelCacheHit')} value={formatPercent(cacheHitRate(usageTotals))} />
           </div>
         </section>
 
@@ -699,10 +713,11 @@ export function RuntimeInsightsPanel({ className = '', onCollapse }: Props): Rea
           <Metric label={t('runtimePanelCost')} value={formatCost(usageTotals.cost_usd)} compact />
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <MiniStat label={t('runtimePanelTurns')} value={formatCount(usageTotals.turns)} />
           <MiniStat label={t('runtimePanelInputTokens')} value={formatCount(usageTotals.input_tokens)} />
           <MiniStat label={t('runtimePanelOutputTokens')} value={formatCount(usageTotals.output_tokens)} />
+          <MiniStat label={t('runtimePanelCacheHit')} value={formatPercent(cacheHitRate(usageTotals))} />
         </div>
 
         <div className="overflow-hidden rounded-lg border border-ds-border">
@@ -719,7 +734,8 @@ export function RuntimeInsightsPanel({ className = '', onCollapse }: Props): Rea
                     {bucketKey(bucket, index)}
                   </div>
                   <div className="mt-0.5 text-[11.5px] text-ds-faint">
-                    {formatCount(bucket.input_tokens)} / {formatCount(bucket.output_tokens)}
+                    {formatCount(bucket.input_tokens)} / {formatCount(bucket.output_tokens)} · {t('runtimePanelCacheHit')}{' '}
+                    {formatPercent(cacheHitRate(bucket))}
                   </div>
                 </div>
                 <div className="text-right text-[12px] font-semibold text-ds-muted">
