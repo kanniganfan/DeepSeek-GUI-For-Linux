@@ -25,7 +25,7 @@ function normalizeJoinedPath(pathname: string): string {
   return `${prefix}${parts.join('/')}`
 }
 
-function pathToFileUrl(pathname: string): string {
+export function writePathToFileUrl(pathname: string): string {
   const normalized = normalizeJoinedPath(pathname)
   const encoded = normalized
     .split('/')
@@ -38,18 +38,37 @@ export function isExplicitWriteResourceUrl(value: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)
 }
 
+function explicitResourceProtocol(value: string): string | null {
+  try {
+    return new URL(value).protocol
+  } catch {
+    return null
+  }
+}
+
 export function resolveWriteMarkdownResource(
   src: string | undefined,
   filePath?: string | null
 ): string | undefined {
-  if (!src?.trim() || !filePath) return src
+  const resolvedPath = resolveWriteMarkdownResourcePath(src, filePath)
+  if (resolvedPath) return writePathToFileUrl(resolvedPath)
+  if (!src?.trim()) return src
   const value = src.trim()
-  if (isExplicitWriteResourceUrl(value) || value.startsWith('#')) return src
+  return explicitResourceProtocol(value) === 'file:' ? undefined : src
+}
+
+export function resolveWriteMarkdownResourcePath(
+  src: string | undefined,
+  filePath?: string | null
+): string | undefined {
+  if (!src?.trim() || !filePath) return undefined
+  const value = src.trim()
+  if (isExplicitWriteResourceUrl(value) || value.startsWith('#')) return undefined
   const [pathname, suffix = ''] = value.split(/([?#].*)/, 2)
   const baseDir = dirnamePortable(filePath)
-  if (!baseDir) return src
+  if (!baseDir || suffix) return undefined
   const resolved = pathname.startsWith('/')
     ? normalizeJoinedPath(pathname)
     : normalizeJoinedPath(`${baseDir}/${pathname}`)
-  return `${pathToFileUrl(resolved)}${suffix}`
+  return resolved
 }

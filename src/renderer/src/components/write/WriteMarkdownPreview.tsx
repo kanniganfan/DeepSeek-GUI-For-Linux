@@ -1,11 +1,25 @@
-import { Component, type ReactElement, type ReactNode } from 'react'
+import {
+  Component,
+  useEffect,
+  useState,
+  type ComponentPropsWithoutRef,
+  type ReactElement,
+  type ReactNode
+} from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { harden } from 'rehype-harden'
 import type { PluggableList } from 'unified'
-import { resolveWriteMarkdownResource } from '@shared/write-markdown-resource'
+import {
+  resolveWriteMarkdownResource,
+  resolveWriteMarkdownResourcePath
+} from '@shared/write-markdown-resource'
 
-export { resolveWriteMarkdownResource } from '@shared/write-markdown-resource'
+export {
+  resolveWriteMarkdownResource,
+  resolveWriteMarkdownResourcePath,
+  writePathToFileUrl
+} from '@shared/write-markdown-resource'
 
 type Props = {
   content: string
@@ -32,6 +46,71 @@ function plainTextFallback(content: string): ReactElement {
     <pre className="m-0 whitespace-pre-wrap break-words font-mono text-[13.5px] leading-6 text-ds-ink">
       {content}
     </pre>
+  )
+}
+
+function isMissingImageIpc(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('No handler registered for') ||
+    message.includes('readWorkspaceImage is not a function')
+}
+
+type ResolvedMarkdownImageProps = {
+  src?: string
+  alt?: string | null
+  filePath?: string | null
+} & Omit<ComponentPropsWithoutRef<'img'>, 'src' | 'alt'>
+
+function ResolvedMarkdownImage({
+  src,
+  alt,
+  filePath,
+  ...props
+}: ResolvedMarkdownImageProps): ReactElement {
+  const [resolvedSrc, setResolvedSrc] = useState(() => resolveWriteMarkdownResource(src, filePath))
+  const [loadFailed, setLoadFailed] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadFailed(false)
+    const localPath = resolveWriteMarkdownResourcePath(src, filePath)
+    const fallback = resolveWriteMarkdownResource(src, filePath)
+    setResolvedSrc(fallback)
+
+    if (!localPath || typeof window.dsGui?.readWorkspaceImage !== 'function') return
+
+    void window.dsGui.readWorkspaceImage({ path: localPath })
+      .then((result) => {
+        if (cancelled) return
+        if (result.ok) {
+          setResolvedSrc(result.dataUrl)
+        } else {
+          setLoadFailed(true)
+        }
+      })
+      .catch((error) => {
+        if (!cancelled && !isMissingImageIpc(error)) setLoadFailed(true)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [src, filePath])
+
+  if (loadFailed) {
+    return (
+      <span className="inline-flex max-w-full items-center rounded-lg border border-red-200/70 bg-red-50/80 px-2 py-1 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
+        {alt || src || 'Image could not be loaded'}
+      </span>
+    )
+  }
+
+  return (
+    <img
+      {...props}
+      src={resolvedSrc}
+      alt={alt ?? ''}
+    />
   )
 }
 
@@ -98,10 +177,11 @@ function WriteMarkdownPreviewContent({ content, isMarkdown, filePath }: Props): 
             </a>
           ),
           img: ({ src, alt, ...props }): ReactNode => (
-            <img
+            <ResolvedMarkdownImage
               {...props}
-              src={resolveWriteMarkdownResource(src, filePath)}
-              alt={alt ?? ''}
+              src={src}
+              alt={alt}
+              filePath={filePath}
             />
           )
         }}

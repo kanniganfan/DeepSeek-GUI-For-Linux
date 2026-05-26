@@ -2,7 +2,10 @@ import { HighlightStyle, syntaxHighlighting, syntaxTree } from '@codemirror/lang
 import { EditorSelection, Facet, RangeSetBuilder, type Extension } from '@codemirror/state'
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
-import { resolveWriteMarkdownResource } from '../components/write/WriteMarkdownPreview'
+import {
+  resolveWriteMarkdownResource,
+  resolveWriteMarkdownResourcePath
+} from '../components/write/WriteMarkdownPreview'
 
 type DecorationRange = {
   from: number
@@ -156,13 +159,14 @@ class TaskCheckboxWidget extends WidgetType {
 class ImageWidget extends WidgetType {
   constructor(
     private src: string,
-    private alt: string
+    private alt: string,
+    private localPath?: string
   ) {
     super()
   }
 
   eq(other: ImageWidget): boolean {
-    return other.src === this.src && other.alt === this.alt
+    return other.src === this.src && other.alt === this.alt && other.localPath === this.localPath
   }
 
   toDOM(): HTMLElement {
@@ -174,6 +178,13 @@ class ImageWidget extends WidgetType {
     image.alt = this.alt
     image.loading = 'lazy'
     wrapper.appendChild(image)
+    if (this.localPath && typeof window.dsGui?.readWorkspaceImage === 'function') {
+      void window.dsGui.readWorkspaceImage({ path: this.localPath })
+        .then((result) => {
+          if (result.ok) image.src = result.dataUrl
+        })
+        .catch(() => undefined)
+    }
     return wrapper
   }
 }
@@ -383,12 +394,17 @@ function nodeTouchesActiveLine(view: EditorView, from: number, to: number, activ
   return false
 }
 
-function markdownImageFromSource(source: string, filePath?: string | null): { src: string; alt: string } | null {
+function markdownImageFromSource(source: string, filePath?: string | null): {
+  src: string
+  alt: string
+  localPath?: string
+} | null {
   const match = /^!\[([^\]]*)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)$/.exec(source.trim())
   if (!match) return null
   const resolved = resolveWriteMarkdownResource(match[2], filePath)
   if (!resolved) return null
-  return { alt: match[1] || '', src: resolved }
+  const localPath = resolveWriteMarkdownResourcePath(match[2], filePath)
+  return { alt: match[1] || '', src: resolved, ...(localPath ? { localPath } : {}) }
 }
 
 function splitTableLine(line: string): string[] {
@@ -659,7 +675,7 @@ function buildMarkdownDecorations(view: EditorView): DecorationSet {
               ranges.push({
                 from: node.from,
                 to: node.to,
-                deco: Decoration.replace({ widget: new ImageWidget(parsed.src, parsed.alt) })
+                deco: Decoration.replace({ widget: new ImageWidget(parsed.src, parsed.alt, parsed.localPath) })
               })
               return false
             }

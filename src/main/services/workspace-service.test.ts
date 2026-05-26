@@ -23,6 +23,7 @@ import {
   createWorkspaceFile,
   deleteWorkspaceEntry,
   listWorkspaceDirectory,
+  readWorkspaceImage,
   readWorkspaceFile,
   renameWorkspaceEntry,
   resolveWorkspaceFile,
@@ -174,6 +175,24 @@ describe('workspace-service boundary checks', () => {
     expect(result.path).toContain(join(workspaceRoot, 'img'))
     expect(result.markdownPath.startsWith('../img/pasted-image-')).toBe(true)
     await expect(readFile(result.path)).resolves.toEqual(Buffer.from('fake-png-bytes'))
+  })
+
+  it('reads supported workspace images as data URLs', async () => {
+    const imagePath = join(workspaceRoot, 'img', 'sample.png')
+    await mkdir(join(workspaceRoot, 'img'), { recursive: true })
+    await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+    const result = await readWorkspaceImage({
+      path: 'img/sample.png',
+      workspaceRoot
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.path).toBe(await realpath(imagePath))
+    expect(result.mimeType).toBe('image/png')
+    expect(result.dataUrl).toBe('data:image/png;base64,iVBORw==')
   })
 
   it('renames files within the selected workspace', async () => {

@@ -6,10 +6,12 @@ import {
   CornerDownLeft,
   Download,
   Eye,
+  ExternalLink,
   FileCode2,
   FilePlus2,
   FilePenLine,
   FolderOpen,
+  Image as ImageIcon,
   Loader2,
   ListTodo,
   MessageSquareQuote,
@@ -17,7 +19,9 @@ import {
   PanelLeftOpen,
   RefreshCw,
   Save,
-  Sparkles
+  Sparkles,
+  ZoomIn,
+  ZoomOut
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { WriteExportFormat } from '@shared/write-export'
@@ -47,6 +51,9 @@ const INLINE_AGENT_MIN_WIDTH = 280
 const INLINE_AGENT_MAX_WIDTH = 440
 const INLINE_AGENT_FALLBACK_HEIGHT = 56
 const WRITE_EXPORT_NOTICE_MS = 3_600
+const IMAGE_MIN_ZOOM = 25
+const IMAGE_MAX_ZOOM = 300
+const IMAGE_ZOOM_STEP = 25
 const WRITE_EXPORT_FORMATS: WriteExportFormat[] = ['html', 'pdf', 'doc', 'docx']
 
 type WriteNotice = {
@@ -68,6 +75,10 @@ function formatSaveLabel(status: WriteSaveStatus, t: (key: string) => string): s
 function clamp(value: number, min: number, max: number): number {
   if (max < min) return min
   return Math.min(Math.max(value, min), max)
+}
+
+function clampImageZoom(value: number): number {
+  return clamp(Math.round(value), IMAGE_MIN_ZOOM, IMAGE_MAX_ZOOM)
 }
 
 function inlineAgentPosition(selection: ReturnType<typeof useWriteWorkspaceStore.getState>['selection']): {
@@ -126,6 +137,148 @@ function exportFormatLabel(format: WriteExportFormat, t: (key: string) => string
   return t('writeExportDocx')
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+type WriteImagePreviewProps = {
+  src: string
+  filePath: string
+  mimeType: string
+  size: number
+  workspaceRoot: string
+}
+
+type WriteImageFitMode = 'fit' | 'actual'
+
+function WriteImagePreview({
+  src,
+  filePath,
+  mimeType,
+  size,
+  workspaceRoot
+}: WriteImagePreviewProps): ReactElement {
+  const { t } = useTranslation('common')
+  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null)
+  const [fitMode, setFitMode] = useState<WriteImageFitMode>('fit')
+  const [zoom, setZoom] = useState(100)
+  const fileName = writeBasenameFromPath(filePath)
+  const relativePath = writeRelativeToWorkspace(workspaceRoot, filePath)
+  const actualMode = fitMode === 'actual'
+  useEffect(() => {
+    setDimensions(null)
+  }, [src, filePath])
+  const openImage = (): void => {
+    if (typeof window.dsGui?.openEditorPath !== 'function') return
+    void window.dsGui.openEditorPath({ path: filePath, workspaceRoot, editorId: 'system' })
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-[radial-gradient(circle_at_top,rgba(0,136,255,0.08),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.82),rgba(247,250,255,0.68))] dark:bg-[radial-gradient(circle_at_top,rgba(96,165,250,0.13),transparent_36%),linear-gradient(180deg,rgba(255,255,255,0.06),rgba(255,255,255,0.025))]">
+      <div className="flex min-h-[54px] shrink-0 items-center justify-between gap-3 border-b border-ds-border-muted px-4 py-2.5 sm:px-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+            <ImageIcon className="h-[18px] w-[18px]" strokeWidth={1.9} />
+          </span>
+          <div className="min-w-0">
+            <div className="truncate text-[14px] font-semibold text-ds-ink">{fileName}</div>
+            <div className="mt-1 truncate text-[12px] text-ds-faint" title={relativePath}>
+              {relativePath}
+            </div>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1 rounded-xl border border-ds-border-muted bg-white/48 p-1 dark:bg-white/[0.035]">
+          <button
+            type="button"
+            onClick={() => {
+              setFitMode('actual')
+              setZoom((value) => clampImageZoom(value - IMAGE_ZOOM_STEP))
+            }}
+            className={toolbarIconButtonClass()}
+            title={t('writeImageZoomOut')}
+            aria-label={t('writeImageZoomOut')}
+          >
+            <ZoomOut className="h-4 w-4" strokeWidth={1.85} />
+          </button>
+          <input
+            type="range"
+            min={IMAGE_MIN_ZOOM}
+            max={IMAGE_MAX_ZOOM}
+            step={IMAGE_ZOOM_STEP}
+            value={zoom}
+            aria-label={t('writeImageZoom')}
+            className="h-8 w-24 accent-[var(--ds-accent)]"
+            onChange={(event) => {
+              setFitMode('actual')
+              setZoom(clampImageZoom(Number(event.target.value)))
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setFitMode('actual')
+              setZoom((value) => clampImageZoom(value + IMAGE_ZOOM_STEP))
+            }}
+            className={toolbarIconButtonClass()}
+            title={t('writeImageZoomIn')}
+            aria-label={t('writeImageZoomIn')}
+          >
+            <ZoomIn className="h-4 w-4" strokeWidth={1.85} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setFitMode((mode) => mode === 'fit' ? 'actual' : 'fit')}
+            className={`${toolbarMenuButtonClass(fitMode === 'fit')} min-w-[52px] justify-center`}
+            title={fitMode === 'fit' ? t('writeImageActualSize') : t('writeImageFit')}
+            aria-label={fitMode === 'fit' ? t('writeImageActualSize') : t('writeImageFit')}
+          >
+            {fitMode === 'fit' ? t('writeImageFitShort') : `${zoom}%`}
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={openImage}
+          className={toolbarIconButtonClass()}
+          title={t('writeImageOpenExternal')}
+          aria-label={t('writeImageOpenExternal')}
+        >
+          <ExternalLink className="h-4 w-4" strokeWidth={1.85} />
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-4 sm:p-6">
+        <div className="flex min-h-full items-center justify-center">
+          <img
+            src={src}
+            alt={fileName}
+            className={`${actualMode ? 'max-w-none' : 'max-h-full max-w-full'} select-none rounded-lg object-contain shadow-[0_18px_50px_rgba(15,23,42,0.16)]`}
+            style={actualMode && dimensions ? {
+              width: `${Math.round(dimensions.width * zoom / 100)}px`,
+              height: 'auto'
+            } : undefined}
+            onLoad={(event) => {
+              const image = event.currentTarget
+              setDimensions({ width: image.naturalWidth, height: image.naturalHeight })
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-ds-border-muted bg-white/44 px-4 py-2 text-[11.5px] text-ds-faint dark:bg-white/[0.035] sm:px-5">
+        <span className="rounded-lg bg-ds-hover/70 px-2 py-1 font-mono">{mimeType}</span>
+        <span className="rounded-lg bg-ds-hover/70 px-2 py-1 font-mono">{formatBytes(size)}</span>
+        {dimensions ? (
+          <span className="rounded-lg bg-ds-hover/70 px-2 py-1 font-mono">
+            {dimensions.width} x {dimensions.height}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 export function WriteWorkspaceView({
   leftSidebarCollapsed,
   onToggleLeftSidebar,
@@ -139,10 +292,13 @@ export function WriteWorkspaceView({
   const {
     workspaceRoot,
     activeFilePath,
+    activeFileKind,
     rootDirectory,
     inlineCompletion,
     inlineCompletionApiReady,
     fileContent,
+    imageDataUrl,
+    imageMimeType,
     fileSize,
     fileTruncated,
     fileError,
@@ -155,6 +311,7 @@ export function WriteWorkspaceView({
     addWriteWorkspace,
     setFileContent,
     syncActiveFileFromDisk,
+    syncActiveImageFromDisk,
     flushSave,
     createFile,
     refreshWorkspace,
@@ -174,14 +331,18 @@ export function WriteWorkspaceView({
   const [exportingFormat, setExportingFormat] = useState<WriteExportFormat | null>(null)
   const [exportNotice, setExportNotice] = useState<WriteNotice | null>(null)
   const workspaceReady = workspaceRoot.trim().length > 0
-  const isMarkdown = activeFilePath ? isMarkdownFile(activeFilePath) : true
+  const activeFileIsImage = activeFileKind === 'image'
+  const activeFileIsText = activeFileKind === 'text'
+  const isMarkdown = activeFilePath && activeFileIsText ? isMarkdownFile(activeFilePath) : true
   const renderSafety = getWriteRenderSafety({
     isMarkdown,
     contentLength: fileContent.length,
     fileSize,
     truncated: fileTruncated
   })
-  const saveLabel = renderSafety.readOnly ? t('writeReadOnly') : formatSaveLabel(saveStatus, t)
+  const saveLabel = activeFileIsImage
+    ? t('writeImagePreview')
+    : renderSafety.readOnly ? t('writeReadOnly') : formatSaveLabel(saveStatus, t)
   const selectionAction = selection.charCount > 0 ? inlineAgentPosition(selection) : null
   const selectionActionActive = Boolean(selectionAction)
   const selectionActionLeft = selectionAction?.left
@@ -257,6 +418,7 @@ export function WriteWorkspaceView({
 
   const exportCurrentFile = async (format: WriteExportFormat): Promise<void> => {
     if (!activeFilePath) return
+    if (!activeFileIsText) return
     if (typeof window.dsGui?.exportWriteDocument !== 'function') {
       showExportNotice({ tone: 'error', message: t('writeExportUnavailable') })
       return
@@ -363,7 +525,7 @@ export function WriteWorkspaceView({
       window.clearTimeout(saveTimerRef.current)
       saveTimerRef.current = null
     }
-    if (saveStatus !== 'dirty' || !workspaceReady || renderSafety.readOnly) return
+    if (saveStatus !== 'dirty' || !workspaceReady || !activeFileIsText || renderSafety.readOnly) return
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null
       void flushSave(workspaceRoot)
@@ -374,7 +536,7 @@ export function WriteWorkspaceView({
         saveTimerRef.current = null
       }
     }
-  }, [flushSave, saveStatus, workspaceReady, workspaceRoot, fileContent, renderSafety.readOnly])
+  }, [flushSave, saveStatus, workspaceReady, workspaceRoot, fileContent, activeFileIsText, renderSafety.readOnly])
 
   useEffect(() => () => {
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
@@ -386,7 +548,7 @@ export function WriteWorkspaceView({
   }, [workspaceRoot])
 
   useEffect(() => {
-    if (!activeFilePath || !workspaceRoot.trim()) return
+    if (!activeFilePath || !workspaceRoot.trim() || (!activeFileIsText && !activeFileIsImage)) return
     if (
       typeof window.dsGui?.watchWorkspaceFile !== 'function' ||
       typeof window.dsGui?.unwatchWorkspaceFile !== 'function' ||
@@ -399,6 +561,10 @@ export function WriteWorkspaceView({
     let watchId = ''
     const offChanged = window.dsGui.onWorkspaceFileChanged((payload) => {
       if (!watchId || payload.watchId !== watchId) return
+      if (activeFileIsImage) {
+        void syncActiveImageFromDisk(workspaceRoot, payload.path)
+        return
+      }
       if (payload.ok) {
         void syncActiveFileFromDisk(workspaceRoot, {
           path: payload.path,
@@ -431,7 +597,14 @@ export function WriteWorkspaceView({
       offChanged()
       if (watchId) void window.dsGui.unwatchWorkspaceFile(watchId)
     }
-  }, [activeFilePath, workspaceRoot, syncActiveFileFromDisk])
+  }, [
+    activeFilePath,
+    activeFileIsImage,
+    activeFileIsText,
+    workspaceRoot,
+    syncActiveFileFromDisk,
+    syncActiveImageFromDisk
+  ])
 
   const emptyState = (
     <div className="flex h-full min-h-0 items-center justify-center">
@@ -459,8 +632,8 @@ export function WriteWorkspaceView({
 
   if (!workspaceReady) return emptyState
 
-  const editorVisible = previewMode !== 'preview'
-  const previewVisible = previewMode === 'split' || previewMode === 'preview'
+  const editorVisible = activeFileIsText && previewMode !== 'preview'
+  const previewVisible = activeFileIsText && (previewMode === 'split' || previewMode === 'preview')
   const editorWidth = previewMode === 'split'
     ? 'min-w-0 flex-1 basis-1/2 border-r border-ds-border-muted'
     : 'min-w-0 flex-1'
@@ -479,13 +652,14 @@ export function WriteWorkspaceView({
     <button
       type="button"
       onClick={() => setPreviewMode(nextMode)}
+      disabled={!activeFileIsText}
       className={modeButtonClass(
         nextMode === 'source'
           ? sourceModeActive
           : nextMode === 'live'
             ? liveModeActive
             : previewMode === nextMode
-      )}
+      ) + (!activeFileIsText ? ' cursor-not-allowed opacity-45' : '')}
       title={label}
       aria-label={label}
     >
@@ -528,7 +702,8 @@ export function WriteWorkspaceView({
             <button
               type="button"
               onClick={() => setPreviewMode('live')}
-              className={`${modeButtonClass(liveModeActive)} gap-1.5`}
+              disabled={!activeFileIsText}
+              className={`${modeButtonClass(liveModeActive)} gap-1.5 ${!activeFileIsText ? 'cursor-not-allowed opacity-45' : ''}`}
               title={t('writeModeLive')}
               aria-label={t('writeModeLive')}
             >
@@ -540,7 +715,8 @@ export function WriteWorkspaceView({
             <button
               type="button"
               onClick={() => setPreviewMode('preview')}
-              className={modeButtonClass(previewMode === 'preview')}
+              disabled={!activeFileIsText}
+              className={`${modeButtonClass(previewMode === 'preview')} ${!activeFileIsText ? 'cursor-not-allowed opacity-45' : ''}`}
               title={t('writeModePreview')}
               aria-label={t('writeModePreview')}
             >
@@ -570,7 +746,7 @@ export function WriteWorkspaceView({
               <button
                 type="button"
                 onClick={() => setExportMenuOpen((open) => !open)}
-                disabled={!activeFilePath || exportInFlight}
+                disabled={!activeFilePath || !activeFileIsText || exportInFlight}
                 className={`${toolbarMenuButtonClass(exportMenuOpen)} disabled:cursor-not-allowed disabled:opacity-40`}
                 title={exportInFlight ? t('writeExporting') : t('writeExport')}
                 aria-label={exportInFlight ? t('writeExporting') : t('writeExport')}
@@ -613,10 +789,10 @@ export function WriteWorkspaceView({
                 if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
                 void flushSave(workspaceRoot)
               }}
-              disabled={!activeFilePath || renderSafety.readOnly}
+              disabled={!activeFilePath || !activeFileIsText || renderSafety.readOnly}
               className={`${toolbarIconButtonClass()} disabled:cursor-not-allowed disabled:opacity-40`}
-              title={renderSafety.readOnly ? t('writeReadOnlySaveDisabled') : t('writeSaveFile')}
-              aria-label={renderSafety.readOnly ? t('writeReadOnlySaveDisabled') : t('writeSaveFile')}
+              title={activeFileIsImage ? t('writeImageSaveDisabled') : renderSafety.readOnly ? t('writeReadOnlySaveDisabled') : t('writeSaveFile')}
+              aria-label={activeFileIsImage ? t('writeImageSaveDisabled') : renderSafety.readOnly ? t('writeReadOnlySaveDisabled') : t('writeSaveFile')}
             >
               <Save className="h-4 w-4" strokeWidth={1.85} />
             </button>
@@ -766,6 +942,14 @@ export function WriteWorkspaceView({
             <div className="flex h-full min-h-[320px] items-center justify-center text-[14px] text-ds-muted">
               {t('filePreviewLoading')}
             </div>
+          ) : activeFileIsImage ? (
+            <WriteImagePreview
+              src={imageDataUrl}
+              filePath={activeFilePath}
+              mimeType={imageMimeType}
+              size={fileSize}
+              workspaceRoot={workspaceRoot}
+            />
           ) : (
             <div className="flex h-full min-h-0 min-w-0 flex-col">
               {renderSafety.notice !== 'none' ? (
@@ -826,7 +1010,7 @@ export function WriteWorkspaceView({
 
       </div>
 
-      {selectionAction && activeFilePath ? (
+      {selectionAction && activeFilePath && activeFileIsText ? (
         <div
           className="write-inline-agent fixed z-50"
           data-origin={selectionAction.origin}

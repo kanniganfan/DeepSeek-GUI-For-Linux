@@ -76,6 +76,8 @@ const api = {
     ipcRenderer.invoke('file:resolve-workspace', options),
   readWorkspaceFile: (options) =>
     ipcRenderer.invoke('file:read-workspace', options),
+  readWorkspaceImage: (options) =>
+    ipcRenderer.invoke('file:read-workspace-image', options),
   writeWorkspaceFile: (payload) =>
     ipcRenderer.invoke('file:write-workspace', payload),
   createWorkspaceFile: (payload) =>

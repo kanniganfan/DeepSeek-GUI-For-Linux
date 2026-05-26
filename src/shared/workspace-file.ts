@@ -67,6 +67,16 @@ export type WorkspaceFileReadResult =
     }
   | { ok: false; message: string }
 
+export type WorkspaceImageReadResult =
+  | {
+      ok: true
+      path: string
+      dataUrl: string
+      mimeType: string
+      size: number
+    }
+  | { ok: false; message: string }
+
 export type WorkspaceFileResolveResult =
   | {
       ok: true

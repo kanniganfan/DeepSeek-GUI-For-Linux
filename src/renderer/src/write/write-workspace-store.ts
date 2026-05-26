@@ -15,13 +15,19 @@ import {
 } from '@shared/app-settings'
 import i18n from '../i18n'
 import type { WorkspaceEntry } from '@shared/workspace-file'
-import { isWriteTextFilePath, isWriteWorkspaceEntry } from '@shared/write-text-file'
+import {
+  isWriteImageFilePath,
+  isWriteWorkspaceEntry,
+  isWriteWorkspaceFilePath
+} from '@shared/write-text-file'
 import type { WriteEditorSelectionState } from '../components/write/WriteMarkdownEditor'
 import type { WriteQuotedSelection } from './quoted-selection'
 import { quotedSelectionFromEditor } from './quoted-selection'
+import { writePathToFileUrl } from '@shared/write-markdown-resource'
 
 export type WritePreviewMode = 'source' | 'live' | 'split' | 'preview'
 export type WriteSaveStatus = 'saved' | 'dirty' | 'saving' | 'error'
+export type WriteActiveFileKind = 'text' | 'image'
 
 export type WriteWorkspaceState = {
   defaultWorkspaceRoot: string
@@ -37,7 +43,10 @@ export type WriteWorkspaceState = {
   loadingDirs: Record<string, boolean>
   treeError: string | null
   activeFilePath: string | null
+  activeFileKind: WriteActiveFileKind | null
   fileContent: string
+  imageDataUrl: string
+  imageMimeType: string
   fileSize: number
   fileTruncated: boolean
   fileError: string | null
@@ -70,6 +79,7 @@ export type WriteWorkspaceState = {
       force?: boolean
     }
   ) => Promise<boolean>
+  syncActiveImageFromDisk: (workspaceRoot: string, path?: string) => Promise<boolean>
   flushSave: (workspaceRoot: string) => Promise<boolean>
   createFile: (workspaceRoot: string, path: string, content?: string) => Promise<string | null>
   createDirectory: (workspaceRoot: string, path: string) => Promise<string | null>
@@ -263,6 +273,31 @@ function emptySelection(): WriteEditorSelectionState {
   return { text: '', ranges: [], charCount: 0 }
 }
 
+function formatWriteImageLoadError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('No handler registered for')
+    ? i18n.t('common:writeImageRestartRequired')
+    : message
+}
+
+function isMissingImageIpc(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('No handler registered for') ||
+    message.includes('readWorkspaceImage is not a function')
+}
+
+function imageMimeTypeFromPath(path: string): string {
+  const lower = path.toLowerCase()
+  if (lower.endsWith('.png')) return 'image/png'
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
+  if (lower.endsWith('.gif')) return 'image/gif'
+  if (lower.endsWith('.webp')) return 'image/webp'
+  if (lower.endsWith('.bmp')) return 'image/bmp'
+  if (lower.endsWith('.avif')) return 'image/avif'
+  if (lower.endsWith('.ico')) return 'image/x-icon'
+  return ''
+}
+
 function filterWriteEntries(entries: WorkspaceEntry[]): WorkspaceEntry[] {
   return entries.filter(isWriteWorkspaceEntry)
 }
@@ -276,7 +311,10 @@ function initialState(): Pick<
   | 'loadingDirs'
   | 'treeError'
   | 'activeFilePath'
+  | 'activeFileKind'
   | 'fileContent'
+  | 'imageDataUrl'
+  | 'imageMimeType'
   | 'fileSize'
   | 'fileTruncated'
   | 'fileError'
@@ -293,7 +331,10 @@ function initialState(): Pick<
     loadingDirs: {},
     treeError: null,
     activeFilePath: null,
+    activeFileKind: null,
     fileContent: '',
+    imageDataUrl: '',
+    imageMimeType: '',
     fileSize: 0,
     fileTruncated: false,
     fileError: null,
@@ -455,7 +496,7 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
     if (!root) return
     set((state) => ({ rootDirectory: root, expandedDirs: new Set([...state.expandedDirs, root]) }))
     const remembered = readRememberedActiveFile(normalized)
-    if (remembered.trim() && isWriteTextFilePath(remembered)) {
+    if (remembered.trim() && isWriteWorkspaceFilePath(remembered)) {
       await get().openFile(normalized, remembered)
     } else if (remembered.trim()) {
       rememberActiveFile(normalized, null)
@@ -528,7 +569,7 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
     cancelExternalSyncAnimation()
     const saved = await get().flushSave(workspaceRoot)
     if (!saved) return
-    if (!isWriteTextFilePath(path)) {
+    if (!isWriteWorkspaceFilePath(path)) {
       set({
         fileLoading: false,
         fileError: i18n.t('common:writeUnsupportedFileType')
@@ -537,6 +578,31 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
     }
     set({ fileLoading: true, fileError: null })
     try {
+      if (isWriteImageFilePath(path)) {
+        const result = await window.dsGui.readWorkspaceImage({ path, workspaceRoot })
+        if (!result.ok) {
+          set({ fileLoading: false, fileError: result.message })
+          return
+        }
+        lastSavedContent = ''
+        rememberActiveFile(workspaceRoot, result.path)
+        set({
+          activeFilePath: result.path,
+          activeFileKind: 'image',
+          fileContent: '',
+          imageDataUrl: result.dataUrl,
+          imageMimeType: result.mimeType,
+          fileSize: result.size,
+          fileTruncated: false,
+          fileLoading: false,
+          fileError: null,
+          saveStatus: 'saved',
+          selection: emptySelection(),
+          quotedSelections: []
+        })
+        return
+      }
+
       const result = await window.dsGui.readWorkspaceFile({ path, workspaceRoot })
       if (!result.ok) {
         set({ fileLoading: false, fileError: result.message })
@@ -546,7 +612,10 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
       rememberActiveFile(workspaceRoot, result.path)
       set({
         activeFilePath: result.path,
+        activeFileKind: 'text',
         fileContent: result.content,
+        imageDataUrl: '',
+        imageMimeType: '',
         fileSize: result.size,
         fileTruncated: result.truncated,
         fileLoading: false,
@@ -556,9 +625,30 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
         quotedSelections: []
       })
     } catch (error) {
+      if (isWriteImageFilePath(path) && isMissingImageIpc(error)) {
+        lastSavedContent = ''
+        rememberActiveFile(workspaceRoot, path)
+        set({
+          activeFilePath: path,
+          activeFileKind: 'image',
+          fileContent: '',
+          imageDataUrl: writePathToFileUrl(path),
+          imageMimeType: imageMimeTypeFromPath(path),
+          fileSize: 0,
+          fileTruncated: false,
+          fileLoading: false,
+          fileError: null,
+          saveStatus: 'saved',
+          selection: emptySelection(),
+          quotedSelections: []
+        })
+        return
+      }
       set({
         fileLoading: false,
-        fileError: error instanceof Error ? error.message : String(error)
+        fileError: isWriteImageFilePath(path)
+          ? formatWriteImageLoadError(error)
+          : error instanceof Error ? error.message : String(error)
       })
     }
   },
@@ -567,7 +657,7 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
     cancelExternalSyncAnimation()
     set((state) => ({
       fileContent: content,
-      saveStatus: state.activeFilePath && content !== lastSavedContent ? 'dirty' : 'saved'
+      saveStatus: state.activeFileKind === 'text' && state.activeFilePath && content !== lastSavedContent ? 'dirty' : 'saved'
     }))
   },
 
@@ -575,6 +665,7 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
     const snapshot = get()
     const force = options.force === true
     if (!snapshot.activeFilePath) return false
+    if (snapshot.activeFileKind !== 'text') return false
     if (!force && (snapshot.saveStatus === 'dirty' || snapshot.saveStatus === 'saving')) return false
     if (options.path && !pathsEqual(options.path, snapshot.activeFilePath)) return false
 
@@ -682,9 +773,50 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
     return true
   },
 
+  syncActiveImageFromDisk: async (workspaceRoot, path) => {
+    const snapshot = get()
+    if (!snapshot.activeFilePath || snapshot.activeFileKind !== 'image') return false
+    if (path && !pathsEqual(path, snapshot.activeFilePath)) return false
+
+    try {
+      const result = await window.dsGui.readWorkspaceImage({
+        path: snapshot.activeFilePath,
+        workspaceRoot
+      })
+      if (!result.ok) {
+        if (pathsEqual(get().activeFilePath ?? '', snapshot.activeFilePath)) {
+          set({ fileError: result.message })
+        }
+        return false
+      }
+
+      const latest = get()
+      if (!latest.activeFilePath || latest.activeFileKind !== 'image' || !pathsEqual(latest.activeFilePath, result.path)) {
+        return false
+      }
+
+      set({
+        imageDataUrl: result.dataUrl,
+        imageMimeType: result.mimeType,
+        fileSize: result.size,
+        fileError: null,
+        fileLoading: false,
+        saveStatus: 'saved'
+      })
+      return true
+    } catch (error) {
+      if (isMissingImageIpc(error)) return false
+      if (pathsEqual(get().activeFilePath ?? '', snapshot.activeFilePath)) {
+        set({ fileError: formatWriteImageLoadError(error) })
+      }
+      return false
+    }
+  },
+
   flushSave: async (workspaceRoot) => {
     const state = get()
     if (!state.activeFilePath) return true
+    if (state.activeFileKind !== 'text') return true
     if (state.fileTruncated) return false
     if (externalSyncTimer !== null) {
       cancelExternalSyncAnimation()
@@ -759,7 +891,10 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
         : state.activeFilePath?.startsWith(previousPrefix)
           ? `${result.path}/${state.activeFilePath.slice(previousPrefix.length)}`
           : state.activeFilePath
-      const keepActiveFile = nextActiveFilePath ? isWriteTextFilePath(nextActiveFilePath) : false
+      const keepActiveFile = nextActiveFilePath ? isWriteWorkspaceFilePath(nextActiveFilePath) : false
+      const nextActiveFileKind = keepActiveFile && nextActiveFilePath
+        ? isWriteImageFilePath(nextActiveFilePath) ? 'image' : 'text'
+        : null
       const expandedDirs = new Set<string>()
       for (const dirPath of state.expandedDirs) {
         if (dirPath === result.previousPath) {
@@ -772,12 +907,15 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
       }
       return {
         activeFilePath: keepActiveFile ? nextActiveFilePath ?? null : null,
-        fileContent: keepActiveFile ? state.fileContent : '',
+        activeFileKind: nextActiveFileKind,
+        fileContent: nextActiveFileKind === 'text' ? state.fileContent : '',
+        imageDataUrl: nextActiveFileKind === 'image' ? state.imageDataUrl : '',
+        imageMimeType: nextActiveFileKind === 'image' ? state.imageMimeType : '',
         fileSize: keepActiveFile ? state.fileSize : 0,
         fileTruncated: keepActiveFile ? state.fileTruncated : false,
         saveStatus: keepActiveFile ? state.saveStatus : 'saved',
-        selection: keepActiveFile ? state.selection : emptySelection(),
-        quotedSelections: keepActiveFile ? state.quotedSelections : [],
+        selection: nextActiveFileKind === 'text' ? state.selection : emptySelection(),
+        quotedSelections: nextActiveFileKind === 'text' ? state.quotedSelections : [],
         expandedDirs,
         entriesByDir: {},
         fileError: null
@@ -807,7 +945,10 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
       rememberActiveFile(workspaceRoot, null)
       set({
         activeFilePath: null,
+        activeFileKind: null,
         fileContent: '',
+        imageDataUrl: '',
+        imageMimeType: '',
         fileSize: 0,
         fileTruncated: false,
         fileError: null,
