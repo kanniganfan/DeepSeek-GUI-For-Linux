@@ -2069,10 +2069,18 @@ summary,
 
 .cm-write-live-preview .cm-write-md-codeblock-copy:hover,
 .cm-write-live-preview .cm-write-md-codeblock-copy:focus-visible,
-.cm-write-live-preview .cm-write-md-codeblock-copy[data-copied='true'] {
+.cm-write-live-preview .cm-write-md-codeblock-copy[data-copied='true'],
+.cm-write-live-preview .cm-write-md-codeblock-copy[data-copy-failed='true'] {
   background: color-mix(in srgb, var(--ds-text) 5%, transparent);
-  color: var(--ds-accent);
   opacity: 1;
+}
+
+.cm-write-live-preview .cm-write-md-codeblock-copy[data-copied='true'] {
+  color: var(--ds-accent);
+}
+
+.cm-write-live-preview .cm-write-md-codeblock-copy[data-copy-failed='true'] {
+  color: #dc2626;
 }
 
 .cm-write-md-code-block {
@@ -2096,20 +2104,54 @@ summary,
   text-transform: lowercase;
 }
 
-.cm-write-md-code-block pre {
+.cm-write-md-code-block-body {
+  background: var(--ds-pre-bg);
+}
+
+.cm-write-md-code-block-html {
+  min-width: 0;
+}
+
+.cm-write-md-code-block-html > pre {
   margin: 0;
+  width: 100%;
   max-width: 100%;
-  overflow-x: auto;
-  padding: 0.68rem 0.78rem;
-  font-family: 'SF Mono', 'JetBrains Mono', 'IBM Plex Mono', monospace;
+  min-width: 0;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+  padding: 0.56rem 0.72rem;
   font-size: 12px;
-  line-height: 1.5;
-  color: var(--ds-text);
+  line-height: 1.4;
+  box-sizing: border-box;
   tab-size: 2;
 }
 
-.cm-write-md-code-block code {
+.cm-write-md-code-block-html > pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+  white-space: normal;
+}
+
+.cm-write-md-code-block-html .line {
+  display: block;
+  min-height: 1.25em;
   white-space: pre;
+}
+
+html[data-theme='dark'] .cm-write-md-code-block-html > pre {
+  background-color: transparent !important;
+  color: var(--shiki-dark) !important;
+}
+
+html[data-theme='dark'] .cm-write-md-code-block-html > pre span {
+  color: var(--shiki-dark) !important;
+  font-style: var(--shiki-dark-font-style, inherit) !important;
+  font-weight: var(--shiki-dark-font-weight, inherit) !important;
+  text-decoration: var(--shiki-dark-text-decoration, inherit) !important;
 }
 
 .cm-write-md-table {
