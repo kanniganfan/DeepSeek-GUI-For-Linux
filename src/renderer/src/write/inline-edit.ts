@@ -1,3 +1,4 @@
+import type { WriteInlineCompletionRequest } from '@shared/write-inline-completion'
 import type { WriteInlineEditRequest, WriteInlineEditScopeKind } from '@shared/write-inline-edit'
 import type { WriteSelectionRange } from '../components/write/WriteMarkdownEditor'
 import type { WriteRecentEdit } from './recent-edits'
@@ -5,7 +6,6 @@ import { recentEditsForInlineEdit } from './recent-edits'
 
 const INLINE_EDIT_PREFIX_WINDOW_CHARS = 6_000
 const INLINE_EDIT_SUFFIX_WINDOW_CHARS = 4_000
-const INLINE_EDIT_PARAGRAPH_SELECTION_MAX_CHARS = 120
 
 export type WriteInlineEditResolvedScope = {
   kind: WriteInlineEditScopeKind
@@ -98,64 +98,19 @@ function previousNonEmptyLine(lines: LineSpan[], lineIndex: number): string {
   return ''
 }
 
-function shouldExpandSelectionToParagraph(range: WriteSelectionRange): boolean {
-  const selected = range.text.trim()
-  if (!selected) return false
-  if (selected.length > INLINE_EDIT_PARAGRAPH_SELECTION_MAX_CHARS) return false
-  return !/\n\s*\n/.test(range.text)
-}
-
-function isParagraphBoundaryLine(text: string): boolean {
-  const trimmed = text.trim()
-  return !trimmed ||
-    /^#{1,6}\s+/.test(trimmed) ||
-    /^```/.test(trimmed) ||
-    /^-{3,}$/.test(trimmed)
-}
-
-function resolveParagraphRange(content: string, range: WriteSelectionRange): { from: number; to: number } {
-  const lines = buildLineSpans(content)
-  const startIndex = lineIndexAtOffset(lines, clampOffset(content, range.from))
-  const endIndex = lineIndexAtOffset(lines, clampOffset(content, Math.max(range.from, range.to - 1)))
-  let first = startIndex
-  let last = endIndex
-
-  if (isParagraphBoundaryLine(lines[startIndex].text) || isParagraphBoundaryLine(lines[endIndex].text)) {
-    return {
-      from: lines[first].from,
-      to: lines[last].to
-    }
-  }
-
-  while (first > 0 && !isParagraphBoundaryLine(lines[first - 1].text)) first -= 1
-  while (last + 1 < lines.length && !isParagraphBoundaryLine(lines[last + 1].text)) last += 1
-
-  return {
-    from: lines[first].from,
-    to: lines[last].to
-  }
-}
-
 export function resolveWriteInlineEditScope(
   content: string,
   range: WriteSelectionRange
 ): WriteInlineEditResolvedScope {
   const from = clampOffset(content, Math.min(range.from, range.to))
   const to = clampOffset(content, Math.max(range.from, range.to))
-  const shouldExpand = shouldExpandSelectionToParagraph({
-    ...range,
-    from,
-    to,
-    text: content.slice(from, to)
-  })
-  const resolved = shouldExpand ? resolveParagraphRange(content, range) : { from, to }
-  const safeFrom = clampOffset(content, resolved.from)
-  const safeTo = clampOffset(content, Math.max(resolved.from, resolved.to))
+  const safeFrom = clampOffset(content, from)
+  const safeTo = clampOffset(content, Math.max(from, to))
   const start = lineColumnForOffset(content, safeFrom)
   const end = lineColumnForOffset(content, Math.max(safeFrom, safeTo - 1))
 
   return {
-    kind: shouldExpand ? 'paragraph' : 'selection',
+    kind: 'selection',
     from: safeFrom,
     to: safeTo,
     startLine: start.line,
@@ -234,4 +189,72 @@ export function applyWriteInlineEditReplacement(
   replacement: string
 ): string {
   return `${content.slice(0, scope.from)}${replacement}${content.slice(scope.to)}`
+}
+
+export function buildWriteInlineEditCompletionRequest(
+  request: WriteInlineEditRequest
+): WriteInlineCompletionRequest {
+  return {
+    prefix: request.prefix,
+    suffix: request.suffix,
+    mode: 'edit',
+    workspaceRoot: request.workspaceRoot,
+    currentFilePath: request.currentFilePath,
+    cursor: {
+      line: request.scope.startLine,
+      column: Math.max(0, request.scope.startColumn - 1)
+    },
+    context: {
+      language: request.context.language,
+      currentLinePrefix: request.context.selectedText,
+      currentLineSuffix: '',
+      previousLine: request.context.previousLine,
+      previousNonEmptyLine: request.context.previousNonEmptyLine,
+      nextLine: request.context.nextLine,
+      indentation: '',
+      signals: {
+        list: false,
+        quote: false,
+        heading: false,
+        table: false,
+        atLineEnd: false,
+        endsWithSentencePunctuation: false,
+        previousLineEndsWithSentencePunctuation: false,
+        prefersNewLineCompletion: false,
+        paragraphBreakOpportunity: false
+      }
+    },
+    policy: {
+      name: 'precision-inline-edit-via-completion-v1',
+      instruction: [
+        'The user explicitly requested an in-place text edit.',
+        `User instruction: ${request.instruction}`,
+        'Prefer returning <<<EDIT ... >>> with replacement text for the editable scope.',
+        'Return <<<SHORT ... >>> or <<<LONG ... >>> only if the instruction clearly asks to insert text at the cursor instead of changing the scope.'
+      ].join('\n'),
+      acceptanceCriteria: [
+        'The action should satisfy the user instruction.',
+        'Edit replacements must cover only the editable scope.',
+        'Markdown structure, indentation, and local voice should be preserved unless instructed otherwise.'
+      ],
+      rejectionCriteria: [
+        'Do not include explanations or before/after labels.',
+        'Do not return unchanged surrounding text outside the editable scope.'
+      ]
+    },
+    preview: request.preview,
+    editCandidate: {
+      kind: request.scope.kind,
+      from: request.scope.from,
+      to: request.scope.to,
+      startLine: request.scope.startLine,
+      startColumn: request.scope.startColumn,
+      endLine: request.scope.endLine,
+      endColumn: request.scope.endColumn,
+      original: request.original,
+      selectedText: request.context.selectedText
+    },
+    recentEdits: request.recentEdits,
+    model: request.model
+  }
 }

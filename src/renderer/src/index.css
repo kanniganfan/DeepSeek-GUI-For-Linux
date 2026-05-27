@@ -1740,6 +1740,10 @@ html[data-theme='dark'] .ds-file-preview-code-html > pre span {
   min-height: var(--ds-window-controls-safe-block);
 }
 
+.ds-window-controls-safe-inset {
+  padding-left: calc(var(--ds-window-controls-safe-block) + 0.5rem);
+}
+
 .ds-drag button,
 .ds-drag input,
 .ds-drag textarea,
@@ -1769,6 +1773,41 @@ summary,
   color: color-mix(in srgb, var(--ds-text-faint) 82%, transparent);
   pointer-events: none;
   white-space: pre-wrap;
+}
+
+.cm-inline-edit-original {
+  color: color-mix(in srgb, var(--ds-text-muted) 78%, transparent);
+  text-decoration-line: line-through;
+  text-decoration-color: color-mix(in srgb, #dc2626 62%, var(--ds-text-faint));
+  text-decoration-thickness: 1.5px;
+}
+
+.cm-inline-edit-replacement {
+  display: inline;
+  margin-left: 0.42em;
+  color: color-mix(in srgb, var(--ds-accent) 78%, var(--ds-text-muted));
+}
+
+.cm-inline-edit-replacement-leading {
+  margin-left: 0;
+  margin-right: 0.42em;
+}
+
+.cm-inline-edit-arrow {
+  margin-right: 0.36em;
+  color: color-mix(in srgb, var(--ds-text-faint) 72%, transparent);
+  font-size: 0.86em;
+}
+
+.cm-inline-edit-text {
+  border-bottom: 1px solid color-mix(in srgb, var(--ds-accent) 48%, transparent);
+  color: color-mix(in srgb, var(--ds-accent) 82%, var(--ds-text));
+}
+
+.write-codemirror-host > .cm-editor {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 .write-markdown-preview {

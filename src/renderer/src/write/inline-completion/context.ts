@@ -1,9 +1,14 @@
 import type { EditorState } from '@codemirror/state'
-import type { InlineCompletionRequestContext } from './types'
+import type {
+  InlineCompletionRequestContext
+} from './types'
+import type { WriteInlineCompletionEditCandidate } from '@shared/write-inline-completion'
 import {
   INLINE_COMPLETION_PREFIX_WINDOW_CHARS,
   INLINE_COMPLETION_SUFFIX_WINDOW_CHARS
 } from './constants'
+
+const INLINE_COMPLETION_EDIT_CANDIDATE_MAX_CHARS = 80
 
 function normalizeWhitespace(text = ''): string {
   return String(text || '').replace(/\s+/g, ' ').trim()
@@ -24,6 +29,26 @@ function hasMarkdownStructure(text = ''): boolean {
     /^\[[ xX]\]\s/.test(trimmed)
 }
 
+function isParagraphBoundaryLine(text = ''): boolean {
+  const trimmed = String(text || '').trim()
+  return !trimmed ||
+    /^#{1,6}\s+/.test(trimmed) ||
+    /^```/.test(trimmed) ||
+    /^-{3,}$/.test(trimmed)
+}
+
+function isWordChar(char = ''): boolean {
+  return /[\p{L}\p{N}_-]/u.test(char)
+}
+
+function lineColumnForOffset(state: EditorState, offset: number): { line: number; column: number } {
+  const line = state.doc.lineAt(Math.max(0, Math.min(state.doc.length, offset)))
+  return {
+    line: line.number,
+    column: offset - line.from + 1
+  }
+}
+
 function clipTail(text = '', maxChars = 0): string {
   const source = String(text || '')
   if (!maxChars || source.length <= maxChars) return source
@@ -34,6 +59,56 @@ function clipHead(text = '', maxChars = 0): string {
   const source = String(text || '')
   if (!maxChars || source.length <= maxChars) return source
   return source.slice(0, maxChars)
+}
+
+function buildEditCandidate(
+  state: EditorState,
+  lineNumber: number,
+  head: number
+): WriteInlineCompletionEditCandidate | undefined {
+  if (state.doc.length === 0 || lineNumber < 1 || lineNumber > state.doc.lines) return undefined
+  const currentLine = state.doc.line(lineNumber)
+  if (isParagraphBoundaryLine(currentLine.text)) return undefined
+
+  let from = Math.max(currentLine.from, Math.min(currentLine.to, head))
+  let to = from
+  const charBefore = from > currentLine.from ? state.sliceDoc(from - 1, from) : ''
+  const charAfter = from < currentLine.to ? state.sliceDoc(from, from + 1) : ''
+
+  if (!isWordChar(charBefore) && !isWordChar(charAfter)) {
+    while (from > currentLine.from && /\s/.test(state.sliceDoc(from - 1, from))) from -= 1
+    to = from
+  }
+
+  if (from > currentLine.from && isWordChar(state.sliceDoc(from - 1, from))) {
+    to = from
+    while (from > currentLine.from && isWordChar(state.sliceDoc(from - 1, from))) from -= 1
+  } else if (from < currentLine.to && isWordChar(state.sliceDoc(from, from + 1))) {
+    to = from
+    while (from > currentLine.from && isWordChar(state.sliceDoc(from - 1, from))) from -= 1
+  } else {
+    return undefined
+  }
+
+  while (to < currentLine.to && isWordChar(state.sliceDoc(to, to + 1))) to += 1
+
+  const original = state.sliceDoc(from, to)
+  if (!normalizeWhitespace(original)) return undefined
+  if (original.length > INLINE_COMPLETION_EDIT_CANDIDATE_MAX_CHARS) return undefined
+
+  const start = lineColumnForOffset(state, from)
+  const end = lineColumnForOffset(state, Math.max(from, to - 1))
+
+  return {
+    kind: 'selection',
+    from,
+    to,
+    startLine: start.line,
+    startColumn: start.column,
+    endLine: end.line,
+    endColumn: end.column,
+    original
+  }
 }
 
 export function buildInlineCompletionRequestContext(
@@ -109,6 +184,7 @@ export function buildInlineCompletionRequestContext(
     prefersNewLineCompletion,
     isParagraphBreakOpportunity,
     nextCharIsWord: /[\p{L}\p{N}_]/u.test(state.sliceDoc(head, Math.min(state.doc.length, head + 1))),
-    looksLikeUrlTail: /https?:\/\/\S*$/i.test(currentLinePrefix)
+    looksLikeUrlTail: /https?:\/\/\S*$/i.test(currentLinePrefix),
+    editCandidate: buildEditCandidate(state, line.number, head)
   }
 }

@@ -409,7 +409,9 @@ function extractPhrases(request: WriteInlineCompletionRequest): string[] {
   const candidates = [
     request.context.currentLinePrefix,
     request.context.previousNonEmptyLine,
-    request.context.previousLine
+    request.context.previousLine,
+    request.editCandidate?.original,
+    ...(request.recentEdits ?? []).flatMap((edit) => [edit.deletedText, edit.insertedText])
   ]
   const phrases: string[] = []
   for (const candidate of candidates) {
@@ -424,7 +426,12 @@ function buildQueryModel(request: WriteInlineCompletionRequest): QueryModel {
   addWeightedTerms(weights, request.context.currentLinePrefix, 3)
   addWeightedTerms(weights, request.context.previousNonEmptyLine, 2)
   addWeightedTerms(weights, request.context.previousLine, 1.4)
+  addWeightedTerms(weights, request.editCandidate?.original ?? '', 1.8)
   addWeightedTerms(weights, request.preview.documentTail, 1)
+  for (const edit of request.recentEdits ?? []) {
+    addWeightedTerms(weights, edit.deletedText, 1.6)
+    addWeightedTerms(weights, edit.insertedText, 1.8)
+  }
   addWeightedTerms(weights, clipTail(request.prefix, 700), 0.7)
 
   const ranked = [...weights.entries()]
@@ -434,6 +441,8 @@ function buildQueryModel(request: WriteInlineCompletionRequest): QueryModel {
   const queryText = compactText([
     request.context.currentLinePrefix,
     request.context.previousNonEmptyLine,
+    request.editCandidate?.original ?? '',
+    ...(request.recentEdits ?? []).flatMap((edit) => [edit.deletedText, edit.insertedText]),
     request.preview.documentTail
   ].join(' ')).slice(0, 240)
   return {

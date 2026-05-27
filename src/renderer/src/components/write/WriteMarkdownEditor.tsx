@@ -55,6 +55,7 @@ type Props = {
   completionLongEnabled: boolean
   completionLongDebounceMs: number
   completionLongMinAcceptScore: number
+  recentEdits?: WriteRecentEdit[]
   onChange: (value: string) => void
   onDocumentEdit?: (edits: WriteRecentEdit[]) => void
   onSelectionChange: (selection: WriteEditorSelectionState) => void
@@ -195,6 +196,8 @@ function buildEditorTheme(appearance: 'source' | 'live'): Extension {
   return EditorView.theme({
     '&': {
       height: '100%',
+      minWidth: '0',
+      minHeight: '0',
       color: 'var(--ds-text)',
       backgroundColor: 'transparent',
       fontFamily: sourceMode
@@ -228,6 +231,19 @@ function buildEditorTheme(appearance: 'source' | 'live'): Extension {
       backgroundColor: 'rgba(255, 255, 255, 0.04)'
     }
   })
+}
+
+function buildInteractionExtensions(readOnly: boolean, appearance: 'source' | 'live'): Extension[] {
+  return [
+    EditorState.readOnly.of(readOnly),
+    EditorView.editable.of(!readOnly),
+    EditorView.contentAttributes.of({
+      spellcheck: readOnly ? 'false' : 'true',
+      autocorrect: readOnly ? 'off' : 'on',
+      autocapitalize: readOnly ? 'off' : 'sentences',
+      'data-write-editor-mode': appearance
+    })
+  ]
 }
 
 function hasClipboardImage(event: ClipboardEvent): boolean {
@@ -267,6 +283,7 @@ export function WriteMarkdownEditor({
   completionLongEnabled,
   completionLongDebounceMs,
   completionLongMinAcceptScore,
+  recentEdits = [],
   onChange,
   onDocumentEdit,
   onSelectionChange,
@@ -290,6 +307,7 @@ export function WriteMarkdownEditor({
   const completionLongEnabledRef = useRef(completionLongEnabled)
   const completionLongDebounceMsRef = useRef(completionLongDebounceMs)
   const completionLongMinAcceptScoreRef = useRef(completionLongMinAcceptScore)
+  const recentEditsRef = useRef(recentEdits)
   const appearanceRef = useRef(appearance)
   const onChangeRef = useRef(onChange)
   const onDocumentEditRef = useRef(onDocumentEdit)
@@ -310,6 +328,7 @@ export function WriteMarkdownEditor({
   completionLongEnabledRef.current = completionLongEnabled
   completionLongDebounceMsRef.current = completionLongDebounceMs
   completionLongMinAcceptScoreRef.current = completionLongMinAcceptScore
+  recentEditsRef.current = recentEdits
   appearanceRef.current = appearance
   onChangeRef.current = onChange
   onDocumentEditRef.current = onDocumentEdit
@@ -345,11 +364,25 @@ export function WriteMarkdownEditor({
           buildInlineCompletionPayload(context, {
             model: completionModelRef.current,
             workspaceRoot: workspaceRootRef.current,
-            mode
+            mode,
+            recentEdits: recentEditsRef.current
           })
         )
-        if (!result.ok || result.completion.length === 0) return null
-        return { text: result.completion, mode }
+        if (!result.ok) return null
+        if (result.action?.kind === 'edit') {
+          return {
+            text: result.action.replacement,
+            action: result.action,
+            mode
+          }
+        }
+        const completionText = result.action ? result.action.text : result.completion
+        if (!completionText) return null
+        return {
+          text: completionText,
+          action: result.action,
+          mode
+        }
       }
     })
 
@@ -362,10 +395,7 @@ export function WriteMarkdownEditor({
             ? writeMarkdownLivePreviewExtensions(filePathRef.current)
             : []
         ),
-        editableCompartment.of([
-          EditorState.readOnly.of(readOnlyRef.current),
-          EditorView.editable.of(!readOnlyRef.current)
-        ]),
+        editableCompartment.of(buildInteractionExtensions(readOnlyRef.current, appearanceRef.current)),
         markdown({ base: markdownLanguage, codeLanguages: languages }),
         history(),
         drawSelection(),
@@ -507,10 +537,7 @@ export function WriteMarkdownEditor({
         livePreviewCompartment.reconfigure(
           appearance === 'live' && livePreviewEnabled ? writeMarkdownLivePreviewExtensions(filePath) : []
         ),
-        editableCompartment.reconfigure([
-          EditorState.readOnly.of(readOnly),
-          EditorView.editable.of(!readOnly)
-        ])
+        editableCompartment.reconfigure(buildInteractionExtensions(readOnly, appearance))
       ]
     })
   }, [appearance, filePath, livePreviewEnabled, readOnly])
@@ -532,5 +559,5 @@ export function WriteMarkdownEditor({
     })
   }, [value])
 
-  return <div ref={hostRef} className="h-full min-h-0 w-full" />
+  return <div ref={hostRef} className="write-codemirror-host flex h-full min-h-0 w-full min-w-0" />
 }

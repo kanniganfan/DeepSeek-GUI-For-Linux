@@ -1094,7 +1094,11 @@ export function Workbench(): ReactElement {
           <section className="ds-chat-stage ds-drag flex min-h-0 min-w-0 flex-1 flex-col">
             <header className="chat-topbar ds-topbar-surface relative z-10 mt-3 flex min-h-[46px] w-full shrink-0 items-stretch overflow-visible rounded-[24px]">
               <div className="chat-topbar-grid grid w-full min-w-0 items-center gap-2.5 px-3 py-2 sm:px-4 md:pl-5 md:pr-2">
-                <div className="chat-topbar-session flex min-w-0 items-center gap-2.5">
+                <div
+                  className={`chat-topbar-session flex min-w-0 items-center gap-2.5 ${
+                    leftSidebarCollapsed ? 'ds-window-controls-safe-inset' : ''
+                  }`}
+                >
                   <button
                     type="button"
                     onClick={toggleLeftSidebar}

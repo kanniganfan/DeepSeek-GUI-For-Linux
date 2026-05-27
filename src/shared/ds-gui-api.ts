@@ -53,11 +53,6 @@ import type {
   WriteInlineCompletionResult
 } from './write-inline-completion'
 import type {
-  WriteInlineEditDebugEntry,
-  WriteInlineEditRequest,
-  WriteInlineEditResult
-} from './write-inline-edit'
-import type {
   WriteExportPayload,
   WriteExportResult,
   WriteRichClipboardPayload,
@@ -209,11 +204,6 @@ export type DsGuiApi = {
   ) => Promise<WriteInlineCompletionResult>
   listWriteInlineCompletionDebugEntries: () => Promise<WriteInlineCompletionDebugEntry[]>
   clearWriteInlineCompletionDebugEntries: () => Promise<boolean>
-  requestWriteInlineEdit: (
-    payload: WriteInlineEditRequest
-  ) => Promise<WriteInlineEditResult>
-  listWriteInlineEditDebugEntries: () => Promise<WriteInlineEditDebugEntry[]>
-  clearWriteInlineEditDebugEntries: () => Promise<boolean>
   exportWriteDocument: (payload: WriteExportPayload) => Promise<WriteExportResult>
   copyWriteDocumentAsRichText: (
     payload: WriteRichClipboardPayload

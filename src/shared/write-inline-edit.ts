@@ -45,34 +45,3 @@ export type WriteInlineEditRequest = {
   recentEdits?: WriteInlineEditRecentEdit[]
   model?: string
 }
-
-export type WriteInlineEditResult =
-  | {
-      ok: true
-      replacement: string
-      model: string
-      referenceCount: number
-    }
-  | { ok: false; message: string }
-
-export type WriteInlineEditDebugEntry = {
-  id: string
-  createdAt: string
-  durationMs: number
-  ok: boolean
-  model: string
-  currentFilePath?: string
-  instruction: string
-  scopeKind: WriteInlineEditScopeKind
-  original: string
-  prompt: string
-  suffix: string
-  rawResponse: string
-  replacement: string
-  errorMessage?: string
-  referenceCount: number
-  recentEditCount: number
-  promptChars: number
-  suffixChars: number
-  responseChars: number
-}

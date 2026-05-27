@@ -37,6 +37,7 @@ import {
 import { getWriteRenderSafety } from '../../write/write-render-safety'
 import {
   applyWriteInlineEditReplacement,
+  buildWriteInlineEditCompletionRequest,
   buildWriteInlineEditDraft
 } from '../../write/inline-edit'
 import { createWriteRecentEdit } from '../../write/recent-edits'
@@ -441,7 +442,7 @@ export function WriteWorkspaceView({
       setFileError(t(selection.ranges.length > 1 ? 'writeInlineEditMultiSelection' : 'writeInlineEditNoSelection'))
       return
     }
-    if (typeof window.dsGui?.requestWriteInlineEdit !== 'function') {
+    if (typeof window.dsGui?.requestWriteInlineCompletion !== 'function') {
       setFileError(t('writeInlineEditUnavailable'))
       return
     }
@@ -456,11 +457,16 @@ export function WriteWorkspaceView({
 
     setInlineEditInFlight(true)
     try {
-      const result = await window.dsGui.requestWriteInlineEdit(draft.request)
+      const result = await window.dsGui.requestWriteInlineCompletion(
+        buildWriteInlineEditCompletionRequest(draft.request)
+      )
       if (!result.ok) {
         setFileError(t('writeInlineEditFailed', { message: result.message }))
         return
       }
+      const replacement = result.action?.kind === 'edit'
+        ? result.action.replacement
+        : result.completion
 
       const latest = useWriteWorkspaceStore.getState()
       if (
@@ -472,21 +478,21 @@ export function WriteWorkspaceView({
         return
       }
 
-      const nextContent = applyWriteInlineEditReplacement(latest.fileContent, draft.scope, result.replacement)
+      const nextContent = applyWriteInlineEditReplacement(latest.fileContent, draft.scope, replacement)
       const inlineEditRecord = createWriteRecentEdit({
         source: 'inline-edit',
         filePath: activeFilePath,
         from: draft.scope.from,
         to: draft.scope.to,
         deletedText: draft.scope.text,
-        insertedText: result.replacement,
+        insertedText: replacement,
         beforeContext: latest.fileContent.slice(
           Math.max(0, draft.scope.from - INLINE_EDIT_RECENT_CONTEXT_CHARS),
           draft.scope.from
         ),
         afterContext: nextContent.slice(
-          draft.scope.from + result.replacement.length,
-          Math.min(nextContent.length, draft.scope.from + result.replacement.length + INLINE_EDIT_RECENT_CONTEXT_CHARS)
+          draft.scope.from + replacement.length,
+          Math.min(nextContent.length, draft.scope.from + replacement.length + INLINE_EDIT_RECENT_CONTEXT_CHARS)
         ),
         instruction: trimmed,
         scopeKind: draft.scope.kind
@@ -848,7 +854,11 @@ export function WriteWorkspaceView({
     <div className="write-workspace-view ds-no-drag flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-3 sm:px-4 md:px-6 lg:px-8">
       <header className="ds-topbar-surface relative z-10 mt-3 flex min-h-[56px] w-full shrink-0 items-stretch overflow-visible rounded-[18px]">
         <div className="write-workspace-toolbar-grid grid w-full min-w-0 items-center gap-2 px-3 py-2 lg:gap-4">
-          <div className="flex min-w-0 items-center gap-2.5">
+          <div
+            className={`flex min-w-0 items-center gap-2.5 ${
+              leftSidebarCollapsed ? 'ds-window-controls-safe-inset' : ''
+            }`}
+          >
             <button
               type="button"
               onClick={onToggleLeftSidebar}
@@ -1204,6 +1214,7 @@ export function WriteWorkspaceView({
                       completionLongEnabled={inlineCompletion.longCompletionEnabled}
                       completionLongDebounceMs={inlineCompletion.longDebounceMs}
                       completionLongMinAcceptScore={inlineCompletion.longMinAcceptScore}
+                      recentEdits={recentEdits}
                       onChange={setFileContent}
                       onDocumentEdit={recordRecentEdits}
                       onSelectionChange={setSelection}

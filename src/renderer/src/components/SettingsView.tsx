@@ -6,7 +6,6 @@ import {
   DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL,
   DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS,
   DEFAULT_WRITE_INLINE_COMPLETION_MODEL,
-  DEFAULT_WRITE_INLINE_LONG_COMPLETION_DEBOUNCE_MS,
   DEFAULT_WRITE_INLINE_LONG_COMPLETION_MAX_TOKENS,
   WRITE_INLINE_COMPLETION_MODEL_IDS,
   DEFAULT_GUI_UPDATE_CHANNEL,
@@ -34,7 +33,6 @@ import type {
   GuiUpdateState
 } from '@shared/gui-update'
 import type { WriteInlineCompletionDebugEntry } from '@shared/write-inline-completion'
-import type { WriteInlineEditDebugEntry } from '@shared/write-inline-edit'
 import {
   AlertCircle,
   Bot,
@@ -84,7 +82,6 @@ type InlineNotice = {
   tone: 'success' | 'error' | 'info'
   message: string
 }
-type WriteDebugLogTab = 'edit' | 'completion'
 type RendererSettingsShape = Partial<Omit<AppSettingsV1, 'deepseek' | 'log' | 'notifications' | 'write' | 'claw' | 'guiUpdate'>> & {
   deepseek?: Partial<AppSettingsV1['deepseek']>
   log?: Partial<AppSettingsV1['log']>
@@ -315,13 +312,10 @@ export function SettingsView(): ReactElement {
   const [mcpBusy, setMcpBusy] = useState(false)
   const [mcpNotice, setMcpNotice] = useState<InlineNotice | null>(null)
   const [writeDebugModalOpen, setWriteDebugModalOpen] = useState(false)
-  const [writeDebugTab, setWriteDebugTab] = useState<WriteDebugLogTab>('edit')
-  const [writeEditDebugEntries, setWriteEditDebugEntries] = useState<WriteInlineEditDebugEntry[]>([])
-  const [writeEditDebugSelectedId, setWriteEditDebugSelectedId] = useState<string | null>(null)
   const [writeCompletionDebugEntries, setWriteCompletionDebugEntries] = useState<WriteInlineCompletionDebugEntry[]>([])
   const [writeCompletionDebugSelectedId, setWriteCompletionDebugSelectedId] = useState<string | null>(null)
-  const [writeEditDebugLoading, setWriteEditDebugLoading] = useState(false)
-  const [writeEditDebugError, setWriteEditDebugError] = useState<string | null>(null)
+  const [writeDebugLoading, setWriteDebugLoading] = useState(false)
+  const [writeDebugError, setWriteDebugError] = useState<string | null>(null)
   const initializedCategory = useRef(false)
   const saveTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const statusTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null)
@@ -370,23 +364,12 @@ export function SettingsView(): ReactElement {
   }, [category])
 
   const loadWriteDebugEntries = useCallback(async (): Promise<void> => {
-    setWriteEditDebugLoading(true)
-    setWriteEditDebugError(null)
+    setWriteDebugLoading(true)
+    setWriteDebugError(null)
     try {
-      const [editEntries, completionEntries] = await Promise.all([
-        typeof window.dsGui?.listWriteInlineEditDebugEntries === 'function'
-          ? window.dsGui.listWriteInlineEditDebugEntries()
-          : Promise.resolve([]),
-        typeof window.dsGui?.listWriteInlineCompletionDebugEntries === 'function'
-          ? window.dsGui.listWriteInlineCompletionDebugEntries()
-          : Promise.resolve([])
-      ])
-      setWriteEditDebugEntries(editEntries)
-      setWriteEditDebugSelectedId((current) =>
-        current && editEntries.some((entry) => entry.id === current)
-          ? current
-          : editEntries[0]?.id ?? null
-      )
+      const completionEntries = typeof window.dsGui?.listWriteInlineCompletionDebugEntries === 'function'
+        ? await window.dsGui.listWriteInlineCompletionDebugEntries()
+        : []
       setWriteCompletionDebugEntries(completionEntries)
       setWriteCompletionDebugSelectedId((current) =>
         current && completionEntries.some((entry) => entry.id === current)
@@ -394,9 +377,9 @@ export function SettingsView(): ReactElement {
           : completionEntries[0]?.id ?? null
       )
     } catch (error) {
-      setWriteEditDebugError(error instanceof Error ? error.message : String(error))
+      setWriteDebugError(error instanceof Error ? error.message : String(error))
     } finally {
-      setWriteEditDebugLoading(false)
+      setWriteDebugLoading(false)
     }
   }, [])
 
@@ -1025,25 +1008,18 @@ export function SettingsView(): ReactElement {
   }
 
   const clearWriteDebugEntries = async (): Promise<void> => {
-    setWriteEditDebugLoading(true)
-    setWriteEditDebugError(null)
+    setWriteDebugLoading(true)
+    setWriteDebugError(null)
     try {
-      await Promise.all([
-        typeof window.dsGui?.clearWriteInlineEditDebugEntries === 'function'
-          ? window.dsGui.clearWriteInlineEditDebugEntries()
-          : Promise.resolve(true),
-        typeof window.dsGui?.clearWriteInlineCompletionDebugEntries === 'function'
-          ? window.dsGui.clearWriteInlineCompletionDebugEntries()
-          : Promise.resolve(true)
-      ])
-      setWriteEditDebugEntries([])
-      setWriteEditDebugSelectedId(null)
+      if (typeof window.dsGui?.clearWriteInlineCompletionDebugEntries === 'function') {
+        await window.dsGui.clearWriteInlineCompletionDebugEntries()
+      }
       setWriteCompletionDebugEntries([])
       setWriteCompletionDebugSelectedId(null)
     } catch (error) {
-      setWriteEditDebugError(error instanceof Error ? error.message : String(error))
+      setWriteDebugError(error instanceof Error ? error.message : String(error))
     } finally {
-      setWriteEditDebugLoading(false)
+      setWriteDebugLoading(false)
     }
   }
 
@@ -1556,24 +1532,6 @@ export function SettingsView(): ReactElement {
                         write: { inlineCompletion: { longCompletionEnabled } }
                       })}
                     />
-                  }
-                />
-                <SettingRow
-                  title={t('writeInlineLongCompletionDebounce')}
-                  description={t('writeInlineLongCompletionDebounceDesc')}
-                  control={
-                    <select
-                      className={selectControlClass}
-                      value={form.write.inlineCompletion.longDebounceMs}
-                      onChange={(e) => update({
-                        write: { inlineCompletion: { longDebounceMs: Number(e.target.value) } }
-                      })}
-                    >
-                      <option value={1800}>{t('writeInlineLongCompletionDelaySoon')}</option>
-                      <option value={DEFAULT_WRITE_INLINE_LONG_COMPLETION_DEBOUNCE_MS}>{t('writeInlineLongCompletionDelayBalanced')}</option>
-                      <option value={4200}>{t('writeInlineLongCompletionDelayPatient')}</option>
-                      <option value={6500}>{t('writeInlineLongCompletionDelayDeep')}</option>
-                    </select>
                   }
                 />
                 <SettingRow
@@ -2205,15 +2163,10 @@ export function SettingsView(): ReactElement {
       </div>
       {writeDebugModalOpen ? (
         <WriteDebugLogModal
-          tab={writeDebugTab}
-          onTabChange={setWriteDebugTab}
-          editEntries={writeEditDebugEntries}
-          editSelectedId={writeEditDebugSelectedId}
           completionEntries={writeCompletionDebugEntries}
           completionSelectedId={writeCompletionDebugSelectedId}
-          loading={writeEditDebugLoading}
-          error={writeEditDebugError}
-          onSelectEdit={setWriteEditDebugSelectedId}
+          loading={writeDebugLoading}
+          error={writeDebugError}
           onSelectCompletion={setWriteCompletionDebugSelectedId}
           onRefresh={() => void loadWriteDebugEntries()}
           onClear={() => void clearWriteDebugEntries()}
@@ -2533,40 +2486,28 @@ function WriteInlineEditDebugText({
 }
 
 function WriteDebugLogModal({
-  tab,
-  onTabChange,
-  editEntries,
-  editSelectedId,
   completionEntries,
   completionSelectedId,
   loading,
   error,
-  onSelectEdit,
   onSelectCompletion,
   onRefresh,
   onClear,
   onClose,
   t
 }: {
-  tab: WriteDebugLogTab
-  onTabChange: (tab: WriteDebugLogTab) => void
-  editEntries: WriteInlineEditDebugEntry[]
-  editSelectedId: string | null
   completionEntries: WriteInlineCompletionDebugEntry[]
   completionSelectedId: string | null
   loading: boolean
   error: string | null
-  onSelectEdit: (id: string | null) => void
   onSelectCompletion: (id: string | null) => void
   onRefresh: () => void
   onClear: () => void
   onClose: () => void
   t: (key: string, values?: Record<string, unknown>) => string
 }): ReactElement {
-  const editSelected = editEntries.find((entry) => entry.id === editSelectedId) ?? editEntries[0] ?? null
   const completionSelected =
     completionEntries.find((entry) => entry.id === completionSelectedId) ?? completionEntries[0] ?? null
-  const entries = tab === 'edit' ? editEntries : completionEntries
 
   return (
     <div className="ds-no-drag fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm">
@@ -2581,7 +2522,7 @@ function WriteDebugLogModal({
               {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} /> : <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.75} />}
               {t('writeInlineEditDebugRefresh')}
             </button>
-            <button type="button" onClick={onClear} disabled={loading || (editEntries.length === 0 && completionEntries.length === 0)} className="inline-flex items-center gap-1.5 rounded-xl border border-ds-border bg-ds-card px-3 py-2 text-[12.5px] font-medium text-ds-ink shadow-sm transition hover:bg-ds-hover disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" onClick={onClear} disabled={loading || completionEntries.length === 0} className="inline-flex items-center gap-1.5 rounded-xl border border-ds-border bg-ds-card px-3 py-2 text-[12.5px] font-medium text-ds-ink shadow-sm transition hover:bg-ds-hover disabled:cursor-not-allowed disabled:opacity-50">
               <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
               {t('writeInlineEditDebugClear')}
             </button>
@@ -2591,68 +2532,34 @@ function WriteDebugLogModal({
           </div>
         </div>
 
-        <div className="flex shrink-0 gap-2 border-b border-ds-border-muted px-4 py-2">
-          {(['edit', 'completion'] as const).map((nextTab) => (
-            <button
-              key={nextTab}
-              type="button"
-              onClick={() => onTabChange(nextTab)}
-              className={`rounded-xl px-3 py-1.5 text-[12.5px] font-semibold transition ${
-                tab === nextTab ? 'bg-ds-subtle text-ds-ink' : 'text-ds-muted hover:bg-ds-hover hover:text-ds-ink'
-              }`}
-            >
-              {nextTab === 'edit'
-                ? t('writeDebugLogEditTab', { count: editEntries.length })
-                : t('writeDebugLogCompletionTab', { count: completionEntries.length })}
-            </button>
-          ))}
-        </div>
-
         {error ? (
           <div className="shrink-0 border-b border-red-200 bg-red-50 px-4 py-2 text-[12.5px] text-red-700 dark:border-red-900/60 dark:bg-red-950/25 dark:text-red-200">
             {error}
           </div>
         ) : null}
 
-        {entries.length === 0 ? (
+        {completionEntries.length === 0 ? (
           <div className="flex flex-1 items-center justify-center px-6 py-10 text-center text-[13px] text-ds-muted">
-            {tab === 'edit' ? t('writeInlineEditDebugEmpty') : t('writeCompletionDebugEmpty')}
+            {t('writeCompletionDebugEmpty')}
           </div>
         ) : (
           <div className="grid min-h-0 flex-1 grid-cols-1 divide-y divide-ds-border-muted lg:grid-cols-[260px_minmax(0,1fr)] lg:divide-x lg:divide-y-0">
             <div className="min-h-0 overflow-auto py-2">
-              {tab === 'edit'
-                ? editEntries.map((entry) => (
-                    <WriteDebugLogListButton
-                      key={entry.id}
-                      active={editSelected?.id === entry.id}
-                      ok={entry.ok}
-                      title={entry.instruction || t('writeInlineEditDebugNoInstruction')}
-                      subtitle={formatWriteEditDebugTime(entry.createdAt)}
-                      durationMs={entry.durationMs}
-                      onClick={() => onSelectEdit(entry.id)}
-                      t={t}
-                    />
-                  ))
-                : completionEntries.map((entry) => (
-                    <WriteDebugLogListButton
-                      key={entry.id}
-                      active={completionSelected?.id === entry.id}
-                      ok={entry.ok}
-                      title={`${entry.mode} · ${entry.completion || entry.errorMessage || entry.model}`}
-                      subtitle={formatWriteEditDebugTime(entry.createdAt)}
-                      durationMs={entry.durationMs}
-                      onClick={() => onSelectCompletion(entry.id)}
-                      t={t}
-                    />
-                  ))}
+              {completionEntries.map((entry) => (
+                <WriteDebugLogListButton
+                  key={entry.id}
+                  active={completionSelected?.id === entry.id}
+                  ok={entry.ok}
+                  title={`${entry.mode} · ${entry.completion || entry.errorMessage || entry.model}`}
+                  subtitle={formatWriteEditDebugTime(entry.createdAt)}
+                  durationMs={entry.durationMs}
+                  onClick={() => onSelectCompletion(entry.id)}
+                  t={t}
+                />
+              ))}
             </div>
             <div className="min-h-0 min-w-0 overflow-auto px-4 py-4">
-              {tab === 'edit' && editSelected ? (
-                <WriteEditDebugDetail entry={editSelected} t={t} />
-              ) : tab === 'completion' && completionSelected ? (
-                <WriteCompletionDebugDetail entry={completionSelected} t={t} />
-              ) : null}
+              {completionSelected ? <WriteCompletionDebugDetail entry={completionSelected} t={t} /> : null}
             </div>
           </div>
         )}
@@ -2696,34 +2603,6 @@ function WriteDebugLogListButton({
   )
 }
 
-function WriteEditDebugDetail({
-  entry,
-  t
-}: {
-  entry: WriteInlineEditDebugEntry
-  t: (key: string, values?: Record<string, unknown>) => string
-}): ReactElement {
-  return (
-    <div className="space-y-3">
-      <WriteDebugMeta
-        filePath={entry.currentFilePath}
-        model={entry.model}
-        context={t('writeInlineEditDebugContextCounts', {
-          references: entry.referenceCount,
-          edits: entry.recentEditCount
-        })}
-        error={entry.errorMessage}
-        t={t}
-      />
-      <WriteInlineEditDebugText label={t('writeInlineEditDebugOriginal')} value={entry.original} />
-      <WriteInlineEditDebugText label={t('writeInlineEditDebugPrompt')} value={entry.prompt} />
-      <WriteInlineEditDebugText label={t('writeInlineEditDebugSuffix')} value={entry.suffix} />
-      <WriteInlineEditDebugText label={t('writeInlineEditDebugReplacement')} value={entry.replacement} />
-      <WriteInlineEditDebugText label={t('writeInlineEditDebugRawResponse')} value={entry.rawResponse} />
-    </div>
-  )
-}
-
 function WriteCompletionDebugDetail({
   entry,
   t
@@ -2736,7 +2615,10 @@ function WriteCompletionDebugDetail({
       <WriteDebugMeta
         filePath={entry.currentFilePath}
         model={`${entry.model} · ${entry.mode}`}
-        context={t('writeCompletionDebugContextCounts', { references: entry.referenceCount })}
+        context={t('writeCompletionDebugContextCounts', {
+          references: entry.referenceCount,
+          edits: entry.recentEditCount ?? 0
+        })}
         error={entry.errorMessage}
         t={t}
       />

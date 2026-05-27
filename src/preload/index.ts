@@ -112,12 +112,6 @@ const api = {
     ipcRenderer.invoke('write:inline-completion-debug:list'),
   clearWriteInlineCompletionDebugEntries: () =>
     ipcRenderer.invoke('write:inline-completion-debug:clear'),
-  requestWriteInlineEdit: (payload) =>
-    ipcRenderer.invoke('write:inline-edit', payload),
-  listWriteInlineEditDebugEntries: () =>
-    ipcRenderer.invoke('write:inline-edit-debug:list'),
-  clearWriteInlineEditDebugEntries: () =>
-    ipcRenderer.invoke('write:inline-edit-debug:clear'),
   startSse: (threadId, sinceSeq, streamId) =>
     ipcRenderer.invoke('runtime:sse:start', { threadId, sinceSeq, streamId }),
   stopSse: (streamId) => ipcRenderer.invoke('runtime:sse:stop', streamId),

@@ -1,4 +1,6 @@
 import type {
+  WriteInlineCompletionAction,
+  WriteInlineCompletionEditCandidate,
   WriteInlineCompletionMode,
   WriteInlineCompletionRequest
 } from '@shared/write-inline-completion'
@@ -39,11 +41,13 @@ export type InlineCompletionRequestContext = {
   isParagraphBreakOpportunity: boolean
   nextCharIsWord: boolean
   looksLikeUrlTail: boolean
+  editCandidate?: WriteInlineCompletionEditCandidate
 }
 
 export type InlineCompletionSuggestion = {
   text: string
   mode?: WriteInlineCompletionMode
+  action?: WriteInlineCompletionAction
 }
 
 export type InlineCompletionFeedback = {

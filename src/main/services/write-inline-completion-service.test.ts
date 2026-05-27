@@ -12,6 +12,7 @@ import {
   buildWriteInlineCompletionPrompt,
   clearWriteInlineCompletionDebugEntries,
   listWriteInlineCompletionDebugEntries,
+  parseWriteInlineAction,
   requestWriteInlineCompletion
 } from './write-inline-completion-service'
 import { clearWriteRetrievalCache } from './write-retrieval-service'
@@ -121,6 +122,10 @@ describe('requestWriteInlineCompletion', () => {
     expect(result).toEqual({
       ok: true,
       completion: ' only a test',
+      action: {
+        kind: 'short',
+        text: ' only a test'
+      },
       model: 'deepseek-v4-flash',
       mode: 'short'
     })
@@ -131,12 +136,18 @@ describe('requestWriteInlineCompletion', () => {
     expect(init.headers).toMatchObject({
       Authorization: 'Bearer sk-test'
     })
-    expect(JSON.parse(String(init.body))).toMatchObject({
+    const body = JSON.parse(String(init.body)) as { prompt: string; suffix: string; max_tokens: number }
+    expect(body).toMatchObject({
       model: 'deepseek-v4-flash',
-      prompt: '# Draft\n\nThis is',
       suffix: ' a test.',
       max_tokens: 64
     })
+    expect(body.prompt).toContain('DeepSeek GUI inline completion')
+    expect(body.prompt).toContain('Return only the text to insert at the cursor')
+    expect(body.prompt).not.toContain('<<<SHORT')
+    expect(body.prompt).toContain('<<<PREFIX')
+    expect(body.prompt).toContain('<<<SUFFIX')
+    expect(body.prompt.endsWith('# Draft\n\nThis is')).toBe(true)
     const debugEntries = listWriteInlineCompletionDebugEntries()
     expect(debugEntries).toHaveLength(1)
     expect(debugEntries[0]).toMatchObject({
@@ -181,10 +192,11 @@ describe('requestWriteInlineCompletion', () => {
       ok: false,
       errorMessage: 'Missing API key for inline completion.',
       mode: 'short',
-      prompt: '# Draft\n\nThis is',
       suffix: ' a test.',
       responseChars: 0
     })
+    expect(debugEntries[0].prompt).toContain('DeepSeek GUI inline completion')
+    expect(debugEntries[0].prompt.endsWith('# Draft\n\nThis is')).toBe(true)
   })
 
   it('preserves an explicit pro completion model', async () => {
@@ -242,8 +254,38 @@ describe('requestWriteInlineCompletion', () => {
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     const body = JSON.parse(String(init.body)) as { prompt: string; max_tokens: number }
     expect(body.max_tokens).toBe(320)
-    expect(body.prompt).toContain('inline completion mode: long inspiration')
+    expect(body.prompt).toContain('Trigger hint: long')
+    expect(body.prompt).toContain('paused for inspiration')
     expect(body.prompt.endsWith(request.prefix)).toBe(true)
+  })
+
+  it('records plain long completions from the FIM request', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ choices: [{ text: '\n\nA fuller continuation.' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await requestWriteInlineCompletion(createSettings(), {
+      ...createRequest(),
+      mode: 'long'
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      completion: '\n\nA fuller continuation.',
+      action: {
+        kind: 'long',
+        text: '\n\nA fuller continuation.'
+      },
+      mode: 'long'
+    })
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const body = JSON.parse(String(init.body)) as { prompt: string }
+    expect(body.prompt).toContain('Return only the text to insert at the cursor')
+    expect(body.prompt).not.toContain('<<<LONG')
   })
 
   it('adds BM25 retrieval snippets to the FIM prompt when workspace context is available', async () => {
@@ -296,15 +338,222 @@ describe('requestWriteInlineCompletion', () => {
     expect(result).toMatchObject({ ok: true })
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     const body = JSON.parse(String(init.body)) as { prompt: string }
-    expect(body.prompt).toContain('DeepSeek GUI inline completion references')
+    expect(body.prompt).toContain('Reference snippets from the same writing workspace')
     expect(body.prompt).toContain('notes/retrieval.md')
     expect(body.prompt).toContain('BM25 keyword retrieval keeps inline completion grounded')
     expect(body.prompt.endsWith(request.prefix)).toBe(true)
   })
 
-  it('leaves the prompt untouched when retrieval has no snippets', () => {
+  it('uses chat completions when the unified request may return an edit action', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: '<<<EDIT\nWrite mode keeps text editing local.\n>>>'
+          }
+        }]
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const request = {
+      ...createRequest(),
+      editCandidate: {
+        kind: 'paragraph' as const,
+        from: 9,
+        to: 47,
+        startLine: 3,
+        startColumn: 1,
+        endLine: 3,
+        endColumn: 38,
+        original: 'DeepSeek GUI keeps text editing local.'
+      },
+      recentEdits: [{
+        source: 'user' as const,
+        ageMs: 1_200,
+        filePath: '/tmp/workspace/draft.md',
+        from: 9,
+        to: 21,
+        deletedText: 'DeepSeek GUI',
+        insertedText: 'Write mode',
+        beforeContext: '',
+        afterContext: ' keeps text editing local.'
+      }]
+    }
+
+    const result = await requestWriteInlineCompletion(createSettings({ longMaxTokens: 320 }), request)
+
+    expect(result).toMatchObject({
+      ok: true,
+      completion: 'Write mode keeps text editing local.',
+      action: {
+        kind: 'edit',
+        replacement: 'Write mode keeps text editing local.',
+        from: 9,
+        to: 47,
+        original: 'DeepSeek GUI keeps text editing local.',
+        scopeKind: 'paragraph'
+      }
+    })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.deepseek.com/v1/chat/completions')
+    const body = JSON.parse(String(init.body)) as {
+      messages: Array<{ role: string; content: string }>
+      prompt?: string
+      suffix?: string
+      max_tokens: number
+      thinking?: { type: string }
+    }
+    expect(body.max_tokens).toBe(320)
+    expect(body.thinking).toEqual({ type: 'disabled' })
+    expect(body.prompt).toBeUndefined()
+    expect(body.suffix).toBeUndefined()
+    expect(body.messages[1].content).toContain('Recent local edits in this file')
+    expect(body.messages[1].content).toContain('Editable local scope if EDIT is the best action')
+    expect(body.messages[1].content).toContain('<<<EDIT_SCOPE')
+  })
+
+  it('uses chat completions for explicit edit mode even without recent edit signals', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: '<<<EDIT\nWrite mode keeps text editing local.\n>>>'
+          }
+        }]
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const request = {
+      ...createRequest(),
+      mode: 'edit' as const,
+      editCandidate: {
+        kind: 'paragraph' as const,
+        from: 9,
+        to: 47,
+        startLine: 3,
+        startColumn: 1,
+        endLine: 3,
+        endColumn: 38,
+        original: 'DeepSeek GUI keeps text editing local.'
+      }
+    }
+
+    const result = await requestWriteInlineCompletion(createSettings({ longMaxTokens: 320 }), request)
+
+    expect(result).toMatchObject({
+      ok: true,
+      mode: 'edit',
+      completion: 'Write mode keeps text editing local.'
+    })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://api.deepseek.com/v1/chat/completions')
+    const body = JSON.parse(String(init.body)) as {
+      messages: Array<{ role: string; content: string }>
+      suffix?: string
+      thinking?: { type: string }
+    }
+    expect(body.suffix).toBeUndefined()
+    expect(body.thinking).toEqual({ type: 'disabled' })
+    expect(body.messages[1].content).toContain('Trigger hint: edit')
+    expect(body.messages[1].content).toContain('<<<PREFIX')
+    expect(body.messages[1].content).toContain('<<<SUFFIX')
+  })
+
+  it('does not send DeepSeek thinking controls for custom chat completion models', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: '<<<EDIT\nWrite mode keeps text editing local.\n>>>'
+          }
+        }]
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const request = {
+      ...createRequest(),
+      model: 'gpt-4.1-mini',
+      mode: 'edit' as const,
+      editCandidate: {
+        kind: 'paragraph' as const,
+        from: 9,
+        to: 47,
+        startLine: 3,
+        startColumn: 1,
+        endLine: 3,
+        endColumn: 38,
+        original: 'DeepSeek GUI keeps text editing local.'
+      }
+    }
+
+    const result = await requestWriteInlineCompletion(createSettings({ longMaxTokens: 320 }), request)
+
+    expect(result).toMatchObject({
+      ok: true,
+      model: 'gpt-4.1-mini',
+      mode: 'edit'
+    })
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const body = JSON.parse(String(init.body)) as { thinking?: { type: string } }
+    expect(body.thinking).toBeUndefined()
+  })
+
+  it('builds the unified action prompt without retrieval snippets when none are supplied', () => {
     const request = createRequest()
 
-    expect(buildWriteInlineCompletionPrompt(request, null)).toBe(request.prefix)
+    const prompt = buildWriteInlineCompletionPrompt(request, null)
+    expect(prompt).toContain('DeepSeek GUI inline completion')
+    expect(prompt).toContain('<<<PREFIX')
+    expect(prompt).toContain('<<<SUFFIX')
+    expect(prompt).not.toContain('<<<SHORT')
+    expect(prompt).not.toContain('Reference snippets from the same writing workspace')
+    expect(prompt.endsWith(request.prefix)).toBe(true)
+  })
+})
+
+describe('parseWriteInlineAction', () => {
+  it('parses TextIDE-style marked short, long, and edit blocks', () => {
+    expect(parseWriteInlineAction('<<<SHORT\n next words\n>>>')).toEqual({
+      kind: 'short',
+      text: ' next words'
+    })
+    expect(parseWriteInlineAction('<<<LONG\n\nA fuller continuation.\n>>>')).toEqual({
+      kind: 'long',
+      text: '\nA fuller continuation.'
+    })
+    expect(parseWriteInlineAction('<<<EDIT\nWrite mode\n>>>', {
+      editTarget: {
+        from: 9,
+        to: 21,
+        original: 'DeepSeek GUI',
+        scopeKind: 'selection'
+      }
+    })).toEqual({
+      kind: 'edit',
+      replacement: 'Write mode',
+      from: 9,
+      to: 21,
+      original: 'DeepSeek GUI',
+      scopeKind: 'selection'
+    })
+  })
+
+  it('suppresses echoed boundary-marker prompts', () => {
+    expect(parseWriteInlineAction('<<<PREFIX\nThis is\n>>>\n<<<SUFFIX\n a test.\n>>>')).toEqual({
+      kind: 'short',
+      text: ''
+    })
   })
 })

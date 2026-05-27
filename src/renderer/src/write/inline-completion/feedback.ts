@@ -11,7 +11,10 @@ import type {
   InlineCompletionRequestContext,
   InlineCompletionSuggestion
 } from './types'
-import type { WriteInlineCompletionMode } from '@shared/write-inline-completion'
+import type {
+  WriteInlineCompletionAction,
+  WriteInlineCompletionMode
+} from '@shared/write-inline-completion'
 
 function sanitizeText(text = ''): string {
   return String(text || '').replace(/\r\n?/g, '\n').replaceAll(String.fromCharCode(0), '')
@@ -25,6 +28,25 @@ function clipPreview(text = '', maxChars = 100): string {
   const normalized = compactText(text)
   if (normalized.length <= maxChars) return normalized
   return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`
+}
+
+function actionText(action: WriteInlineCompletionAction): string {
+  return action.kind === 'edit' ? action.replacement : action.text
+}
+
+function actionFromSuggestion(
+  suggestion: InlineCompletionSuggestion | string | null,
+  fallbackMode: WriteInlineCompletionMode
+): WriteInlineCompletionAction | null {
+  const completionKind = fallbackMode === 'long' ? 'long' : 'short'
+  if (typeof suggestion === 'string') return { kind: completionKind, text: suggestion }
+  if (suggestion?.action) return suggestion.action
+  if (suggestion?.text) return { kind: completionKind, text: suggestion.text }
+  return null
+}
+
+function hasStructuredModelAction(suggestion: InlineCompletionSuggestion | string | null): boolean {
+  return typeof suggestion !== 'string' && Boolean(suggestion?.action)
 }
 
 function usefulSingleToken(text = '', context: InlineCompletionRequestContext): boolean {
@@ -155,10 +177,15 @@ export function evaluateInlineCompletionCandidate(
 ): {
   accepted: boolean
   text: string
+  action?: WriteInlineCompletionAction
   feedback: InlineCompletionFeedback
 } {
-  const text = sanitizeText(typeof suggestion === 'string' ? suggestion : suggestion?.text ?? '')
-  const mode = options.mode ?? (typeof suggestion === 'string' ? 'short' : suggestion?.mode) ?? 'short'
+  const requestedMode = options.mode ?? (typeof suggestion === 'string' ? 'short' : suggestion?.mode) ?? 'short'
+  const rawAction = actionFromSuggestion(suggestion, requestedMode)
+  const isEditAction = rawAction?.kind === 'edit'
+  const structuredModelAction = hasStructuredModelAction(suggestion)
+  const text = sanitizeText(rawAction ? actionText(rawAction) : '')
+  const mode = rawAction?.kind ?? requestedMode
   const minAcceptScore = Number.isFinite(options.minAcceptScore)
     ? Number(options.minAcceptScore)
     : mode === 'long'
@@ -170,6 +197,52 @@ export function evaluateInlineCompletionCandidate(
   if (!text) return reject('empty-candidate', context, text, 0, mode)
   if (!compactText(text) && !usefulSingleToken(text, context)) {
     return reject('blank-candidate', context, text, 0, mode)
+  }
+
+  if (isEditAction) {
+    const action = rawAction
+    const original = sanitizeText(action.original)
+    if (action.from < 0 || action.to < action.from) {
+      return reject('invalid-edit-range', context, text, 0.05, mode)
+    }
+    if (compactText(original) === compactText(text)) {
+      return reject('unchanged-edit', context, text, 0.08, mode)
+    }
+
+    const charCount = text.length
+    const lineCount = text.split('\n').length
+    if (charCount > INLINE_LONG_COMPLETION_MAX_VISIBLE_CHARS) {
+      return reject('edit-too-long', context, text, 0.08, mode)
+    }
+    if (lineCount > INLINE_LONG_COMPLETION_MAX_VISIBLE_LINES) {
+      return reject('edit-too-many-lines', context, text, 0.08, mode)
+    }
+
+    const score = mode === 'long' ? 0.64 : 0.58
+    if (score < effectiveMinAcceptScore) {
+      return reject('low-confidence', context, text, score, mode)
+    }
+
+    return {
+      accepted: true,
+      text,
+      action: {
+        ...action,
+        replacement: text
+      },
+      feedback: {
+        phase: 'candidate',
+        decision: 'show',
+        reason: 'model-selected-edit',
+        score,
+        preview: clipPreview(text),
+        mode,
+        cursor: {
+          line: context.lineNumber,
+          column: context.column
+        }
+      }
+    }
   }
 
   const charCount = text.length
@@ -197,7 +270,9 @@ export function evaluateInlineCompletionCandidate(
     return reject('sentence-boundary', context, text, 0.04, mode)
   }
 
-  let score = mode === 'long' ? 0.4 : 0.34
+  let score = mode === 'long'
+    ? (structuredModelAction ? 0.48 : 0.4)
+    : (structuredModelAction ? 0.58 : 0.34)
   score += continuityBoost(context, text)
   score += structuralBoost(context, text)
   score += paragraphStartBoost(context, text)
@@ -213,10 +288,11 @@ export function evaluateInlineCompletionCandidate(
   return {
     accepted: true,
     text,
+    action: { kind: mode === 'long' ? 'long' : 'short', text },
     feedback: {
       phase: 'candidate',
       decision: 'show',
-      reason: 'high-confidence',
+      reason: structuredModelAction ? 'model-returned-action' : 'high-confidence',
       score: Number(score.toFixed(2)),
       preview: clipPreview(text),
       mode,

@@ -11,8 +11,7 @@ import {
   workspaceEntryRenamePayloadSchema,
   writeExportPayloadSchema,
   writeRichClipboardPayloadSchema,
-  writeInlineCompletionPayloadSchema,
-  writeInlineEditPayloadSchema
+  writeInlineCompletionPayloadSchema
 } from './app-ipc-schemas'
 
 describe('app-ipc-schemas', () => {
@@ -96,7 +95,7 @@ describe('app-ipc-schemas', () => {
     const payload = writeInlineCompletionPayloadSchema.parse({
       prefix: '## Heading\n\nSome intro',
       suffix: '',
-      mode: 'long',
+      mode: 'edit',
       workspaceRoot: '/tmp/workspace',
       currentFilePath: '/tmp/workspace/notes.md',
       cursor: {
@@ -133,63 +132,37 @@ describe('app-ipc-schemas', () => {
         local: 'Some intro',
         documentTail: '## Heading Some intro'
       },
-      model: 'deepseek-v4-pro'
-    })
-
-    expect(payload.model).toBe('deepseek-v4-pro')
-    expect(payload.mode).toBe('long')
-    expect(payload.workspaceRoot).toBe('/tmp/workspace')
-    expect(payload.cursor.line).toBe(3)
-  })
-
-  it('accepts structured inline edit payloads', () => {
-    const payload = writeInlineEditPayloadSchema.parse({
-      prefix: '# Draft\n\n',
-      suffix: '\n\nNext paragraph.',
-      original: 'DeepSeek GUI keeps text editing local.',
-      instruction: 'Replace DeepSeek GUI with Write mode in this paragraph.',
-      workspaceRoot: '/tmp/workspace',
-      currentFilePath: '/tmp/workspace/notes.md',
-      scope: {
+      editCandidate: {
         kind: 'paragraph',
-        from: 10,
-        to: 48,
+        from: 12,
+        to: 22,
         startLine: 3,
         startColumn: 1,
         endLine: 3,
-        endColumn: 38
-      },
-      context: {
-        language: 'markdown',
-        selectedText: 'DeepSeek GUI',
-        previousLine: '',
-        previousNonEmptyLine: '# Draft',
-        nextLine: ''
-      },
-      preview: {
-        local: 'DeepSeek GUI keeps text editing local.',
-        documentTail: '# Draft'
+        endColumn: 10,
+        original: 'Some intro',
+        selectedText: 'Some'
       },
       recentEdits: [{
         source: 'user',
         ageMs: 1_200,
         filePath: '/tmp/workspace/notes.md',
         from: 12,
-        to: 24,
-        deletedText: 'DeepSeek GUI',
-        insertedText: 'Write mode',
-        beforeContext: 'Earlier: ',
-        afterContext: ' keeps text editing local.',
-        instruction: 'Rename the product.',
-        scopeKind: 'paragraph'
+        to: 16,
+        deletedText: 'Old',
+        insertedText: 'Some',
+        beforeContext: '',
+        afterContext: ' intro'
       }],
-      model: 'deepseek-v4-flash'
+      model: 'deepseek-v4-pro'
     })
 
-    expect(payload.scope.kind).toBe('paragraph')
-    expect(payload.context.selectedText).toBe('DeepSeek GUI')
-    expect(payload.recentEdits?.[0].insertedText).toBe('Write mode')
-    expect(payload.model).toBe('deepseek-v4-flash')
+    expect(payload.model).toBe('deepseek-v4-pro')
+    expect(payload.mode).toBe('edit')
+    expect(payload.workspaceRoot).toBe('/tmp/workspace')
+    expect(payload.cursor.line).toBe(3)
+    expect(payload.editCandidate?.kind).toBe('paragraph')
+    expect(payload.recentEdits?.[0].insertedText).toBe('Some')
   })
 
   it('accepts write export payloads', () => {

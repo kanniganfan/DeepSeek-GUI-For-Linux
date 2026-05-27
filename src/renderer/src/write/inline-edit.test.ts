@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { WriteSelectionRange } from '../components/write/WriteMarkdownEditor'
 import {
   applyWriteInlineEditReplacement,
+  buildWriteInlineEditCompletionRequest,
   buildWriteInlineEditDraft,
   resolveWriteInlineEditScope
 } from './inline-edit'
@@ -23,7 +24,7 @@ function selectionRange(content: string, selected: string): WriteSelectionRange 
 }
 
 describe('write inline edit helpers', () => {
-  it('expands a short selected phrase to the containing paragraph', () => {
+  it('keeps a short selected phrase as the exact edit scope', () => {
     const content = [
       '# Draft',
       '',
@@ -35,14 +36,14 @@ describe('write inline edit helpers', () => {
 
     const scope = resolveWriteInlineEditScope(content, range)
 
-    expect(scope.kind).toBe('paragraph')
+    expect(scope.kind).toBe('selection')
     expect(scope.startLine).toBe(3)
     expect(scope.endLine).toBe(3)
-    expect(scope.text).toBe('Alpha is the product name. Alpha helps writers keep terminology aligned.')
+    expect(scope.text).toBe('Alpha helps')
     expect(scope.selectedText).toBe('Alpha helps')
   })
 
-  it('builds a FIM edit payload around the resolved scope', () => {
+  it('builds an edit payload around the exact selected scope', () => {
     const content = [
       '# Draft',
       '',
@@ -58,11 +59,36 @@ describe('write inline edit helpers', () => {
       model: 'deepseek-v4-flash'
     })
 
-    expect(draft.request.prefix).toBe('# Draft\n\n')
-    expect(draft.request.suffix).toBe('\n\nNext paragraph.')
+    expect(draft.request.prefix).toBe('# Draft\n\nAlpha is the product name. ')
+    expect(draft.request.suffix).toBe(' writers keep terminology aligned.\n\nNext paragraph.')
     expect(draft.request.original).toBe(draft.scope.text)
     expect(draft.request.context.selectedText).toBe('Alpha helps')
-    expect(draft.request.scope.kind).toBe('paragraph')
+    expect(draft.request.scope.kind).toBe('selection')
+  })
+
+  it('converts explicit inline edits into completion mode edit requests', () => {
+    const content = [
+      '# Draft',
+      '',
+      'Alpha is the product name. Alpha helps writers keep terminology aligned.'
+    ].join('\n')
+    const draft = buildWriteInlineEditDraft(content, selectionRange(content, 'Alpha helps'), 'Rename Alpha to Write mode.', {
+      workspaceRoot: '/tmp/workspace',
+      currentFilePath: '/tmp/workspace/draft.md',
+      model: 'deepseek-v4-flash'
+    })
+
+    const request = buildWriteInlineEditCompletionRequest(draft.request)
+
+    expect(request.mode).toBe('edit')
+    expect(request.editCandidate).toMatchObject({
+      kind: 'selection',
+      original: draft.scope.text,
+      selectedText: 'Alpha helps'
+    })
+    expect(request.policy.instruction).toContain('Rename Alpha to Write mode.')
+    expect(request.prefix).toBe(draft.request.prefix)
+    expect(request.suffix).toBe(draft.request.suffix)
   })
 
   it('adds recent same-file edits to the inline edit payload', () => {
@@ -99,7 +125,7 @@ describe('write inline edit helpers', () => {
     })
   })
 
-  it('does not pull a preceding markdown heading into a paragraph edit', () => {
+  it('does not pull surrounding paragraph text into a selection edit', () => {
     const content = [
       '## Product',
       'Alpha is the product name. Alpha helps writers.',
@@ -110,9 +136,9 @@ describe('write inline edit helpers', () => {
 
     const scope = resolveWriteInlineEditScope(content, range)
 
-    expect(scope.kind).toBe('paragraph')
+    expect(scope.kind).toBe('selection')
     expect(scope.startLine).toBe(2)
-    expect(scope.text).toBe('Alpha is the product name. Alpha helps writers.')
+    expect(scope.text).toBe('Alpha helps')
   })
 
   it('applies replacement only to the resolved scope', () => {
@@ -132,13 +158,13 @@ describe('write inline edit helpers', () => {
     const next = applyWriteInlineEditReplacement(
       content,
       draft.scope,
-      'Write mode is the product name. Write mode helps writers keep terminology aligned.'
+      'Write mode helps'
     )
 
     expect(next).toBe([
       '# Draft',
       '',
-      'Write mode is the product name. Write mode helps writers keep terminology aligned.',
+      'Alpha is the product name. Write mode helps writers keep terminology aligned.',
       '',
       'Next paragraph.'
     ].join('\n'))
