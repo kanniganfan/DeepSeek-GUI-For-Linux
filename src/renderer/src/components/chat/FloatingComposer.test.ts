@@ -263,18 +263,20 @@ describe('FloatingComposer capability controls', () => {
     expect(planButton).not.toContain('disabled=""')
   })
 
-  it('shows discovered Skills in the slash command menu', () => {
+  it('shows discovered project Skills in the slash command menu', () => {
     useChatStore.setState({
       activeThreadId: 'thr_1',
       activeThreadGoal: null,
       route: 'chat',
-      workspaceRoot: '/workspace/deepseek-gui'
+      workspaceRoot: '/workspace/deepseek-gui',
+      threads: []
     })
 
     const html = renderToStaticMarkup(
       createElement(FloatingComposer, {
-        input: '/rev',
+        input: '/openspec',
         setInput: () => undefined,
+        workspaceRootOverride: '/workspace/deepseek-gui',
         mode: 'agent',
         setMode: () => undefined,
         busy: false,
@@ -290,16 +292,18 @@ describe('FloatingComposer capability controls', () => {
         attachmentUploadEnabled: false,
         webAccessAvailable: false,
         skillCommands: [{
-          id: 'review',
-          name: 'Review',
-          description: 'Review the current change'
+          id: 'openspec-apply-change',
+          name: 'Openspec Apply Change',
+          description: 'Implement tasks from an OpenSpec change',
+          root: '/workspace/deepseek-gui/.codex/skills/openspec-apply-change'
         }]
       })
     )
 
-    expect(html).toContain('Review')
-    expect(html).toContain('Review the current change')
-    expect(html).toContain('/skill:review')
+    expect(html).toContain('Openspec Apply Change')
+    expect(html).toContain('Implement tasks from an OpenSpec change')
+    expect(html).toContain('Project')
+    expect(html).toContain('/skill:openspec-apply-change')
   })
 
   it('enables local Claw input when a WeChat channel is already mapped to a local thread', () => {

@@ -488,6 +488,12 @@ export const skillSaveFilePayloadSchema = z
   })
   .strict()
 
+export const skillListPayloadSchema = z
+  .object({
+    workspaceRoot: z.string().trim().max(MAX_PATH_LENGTH).optional()
+  })
+  .strict()
+
 export const rootPathSchema = trimmedString(MAX_PATH_LENGTH)
 export const deepseekConfigContentSchema = z.string().max(MAX_CONFIG_FILE_BYTES)
 

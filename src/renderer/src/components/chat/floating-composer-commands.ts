@@ -13,6 +13,7 @@ export type SlashCommand = {
   keywords: string[]
   icon: ReactElement
   badge?: string
+  scopeLabel?: string
   skillPrompt?: string
   disabled?: boolean
 }

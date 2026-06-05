@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type AddressInfo } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -245,6 +245,35 @@ describe('syncGuiManagedKunConfig', () => {
       ],
       trustScope: 'user'
     })
+  })
+
+  it('adds GUI project and configured global skill roots to Kun runtime capabilities', async () => {
+    if (!tempRoot) throw new Error('temp root not initialized')
+    const configPath = join(tempRoot, 'config.json')
+    const module = await import('./kun-process')
+    const settings = createSettings('/tmp/fake-kun-child.js')
+    const workspaceRoot = join(tempRoot, 'workspace')
+    const extraRoot = join(tempRoot, 'extra-skills')
+    settings.workspaceRoot = workspaceRoot
+    settings.claw.skills.extraDirs = [extraRoot]
+    mkdirSync(join(workspaceRoot, '.codex', 'skills'), { recursive: true })
+
+    await module.syncGuiManagedKunConfig(tempRoot, defaultKunRuntimeSettings(), {
+      settings,
+      launch: {
+        appPath: '/tmp/deepseek-gui-test-app',
+        execPath: '/tmp/electron',
+        isPackaged: false
+      }
+    })
+
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as any
+    expect(parsed.capabilities.skills.enabled).toBe(true)
+    expect(parsed.capabilities.skills.legacySkillMd).toBe(true)
+    expect(parsed.capabilities.skills.roots).toEqual(expect.arrayContaining([
+      join(workspaceRoot, '.codex', 'skills'),
+      extraRoot
+    ]))
   })
 
   it('writes GUI-managed MCP search settings without removing existing servers', async () => {

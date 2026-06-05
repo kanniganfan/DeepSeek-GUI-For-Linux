@@ -6,6 +6,7 @@ import {
   scheduleTaskFromTextPayloadSchema,
   settingsPatchSchema,
   shellOpenExternalUrlSchema,
+  skillListPayloadSchema,
   sseStartPayloadSchema,
   workspaceDirectoryCreatePayloadSchema,
   workspaceDirectoryTargetPayloadSchema,
@@ -73,6 +74,13 @@ describe('app-ipc-schemas', () => {
       method: 'PATCH',
       body: '{}'
     }).path).toBe('/v1/memory/mem_1')
+  })
+
+  it('accepts skill list payloads with an optional workspace root', () => {
+    expect(skillListPayloadSchema.parse({
+      workspaceRoot: ' /tmp/workspace '
+    })).toEqual({ workspaceRoot: '/tmp/workspace' })
+    expect(skillListPayloadSchema.parse({})).toEqual({})
   })
 
   it('accepts Kun thread goal endpoints', () => {

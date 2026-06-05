@@ -671,6 +671,8 @@
   "slashCommandBtwTitle": "By the way…",
   "slashCommandBtwDescription": "Open a parallel side conversation that inherits this thread's context, without leaving the main chat.",
   "slashSkillDescriptionFallback": "Load this Skill for the next message.",
+  "slashSkillScopeProject": "Project",
+  "slashSkillScopeGlobal": "Global",
   "turnModelBadgeTitle": "Model for this turn: {{model}}",
   "sidePanelTitle": "Side conversations",
   "sidePanelParentLabel": "From \"{{title}}\"",

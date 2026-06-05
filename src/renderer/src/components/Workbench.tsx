@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { parseClawCommand } from '@shared/claw-commands'
 import { DEFAULT_COMPOSER_MODEL_IDS } from '@shared/default-composer-models'
 import { buildGuiPlanId, buildPlanRelativePath } from '@shared/gui-plan'
+import type { SkillListItem } from '@shared/ds-gui-api'
 import type { ClipboardImageReadResult } from '@shared/workspace-file'
 import type { AttachmentReference, ChatBlock } from '../agent/types'
 import type { CoreRuntimeInfoJson, CoreRuntimeSkillJson } from '../agent/kun-contract'
@@ -110,6 +111,33 @@ function sddPlanMatchesPendingTarget(
   if (!plan || !target) return false
   if (plan.id === target.planId) return true
   return buildGuiPlanId(plan.workspaceRoot, plan.relativePath) === target.planId
+}
+
+function mergeSkillCommands(
+  runtimeSkills: CoreRuntimeSkillJson[],
+  localSkills: SkillListItem[]
+): CoreRuntimeSkillJson[] {
+  const merged = new Map<string, CoreRuntimeSkillJson>()
+  for (const skill of localSkills) {
+    merged.set(skill.id, {
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      root: skill.root,
+      legacy: skill.legacy,
+      scope: skill.scope
+    })
+  }
+  for (const skill of runtimeSkills) {
+    const existing = merged.get(skill.id)
+    merged.set(skill.id, existing ? {
+      ...skill,
+      ...existing,
+      triggers: skill.triggers ?? existing.triggers,
+      allowedTools: skill.allowedTools ?? existing.allowedTools
+    } : skill)
+  }
+  return [...merged.values()]
 }
 
 function sddAssistantContextFromBlocks(blocks: ChatBlock[], maxMessages = 10): string {
@@ -308,6 +336,10 @@ export function Workbench(): ReactElement {
     () => clawChannels.find((channel) => channel.id === activeClawChannelId) ?? null,
     [activeClawChannelId, clawChannels]
   )
+  const activeSkillWorkspace = useMemo(
+    () => threads.find((thread) => thread.id === activeThreadId)?.workspace || workspaceRoot || '',
+    [activeThreadId, threads, workspaceRoot]
+  )
   const latestDevPreviewUrl = detectedDevPreviewUrls[0] ?? null
   const latestAutoOpenDevPreviewUrl = autoOpenDevPreviewUrls[0] ?? null
   const {
@@ -442,32 +474,37 @@ export function Workbench(): ReactElement {
 
   useEffect(() => {
     let cancelled = false
-    if (runtimeConnection !== 'ready') {
-      setRuntimeInfo(null)
-      setRuntimeSkills([])
-      return
-    }
+    const runtimeReady = runtimeConnection === 'ready'
+    if (!runtimeReady) setRuntimeInfo(null)
     const provider = getProvider()
-    if (typeof provider.getRuntimeInfo !== 'function' && typeof provider.listSkills !== 'function') return
+    const localSkillsTask = typeof window !== 'undefined' && typeof window.dsGui?.listSkills === 'function'
+      ? window.dsGui.listSkills(activeSkillWorkspace || undefined)
+      : Promise.resolve({ ok: true as const, skills: [], validationErrors: [] })
     void Promise.allSettled([
-      provider.getRuntimeInfo ? provider.getRuntimeInfo() : Promise.resolve(null),
-      provider.listSkills ? provider.listSkills() : Promise.resolve([])
+      runtimeReady && provider.getRuntimeInfo ? provider.getRuntimeInfo() : Promise.resolve(null),
+      runtimeReady && provider.listSkills ? provider.listSkills() : Promise.resolve([]),
+      localSkillsTask
     ])
-      .then(([runtimeResult, skillsResult]) => {
+      .then(([runtimeResult, skillsResult, localSkillsResult]) => {
         if (cancelled) return
         setRuntimeInfo(runtimeResult.status === 'fulfilled' ? runtimeResult.value : null)
-        setRuntimeSkills(skillsResult.status === 'fulfilled' ? skillsResult.value : [])
+        const runtimeSkillList = skillsResult.status === 'fulfilled' ? skillsResult.value : []
+        const localSkillList =
+          localSkillsResult.status === 'fulfilled' && localSkillsResult.value.ok
+            ? localSkillsResult.value.skills
+            : []
+        setRuntimeSkills(mergeSkillCommands(runtimeSkillList, localSkillList))
       })
       .catch(() => {
         if (!cancelled) {
-          setRuntimeInfo(null)
+          if (!runtimeReady) setRuntimeInfo(null)
           setRuntimeSkills([])
         }
       })
     return () => {
       cancelled = true
     }
-  }, [runtimeConnection])
+  }, [activeSkillWorkspace, runtimeConnection])
 
   const attachmentUploadEnabled = isChatAttachmentUploadEnabled({
     runtimeConnection,

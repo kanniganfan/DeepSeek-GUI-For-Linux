@@ -38,6 +38,7 @@ import {
 } from './claw-schedule-mcp-config'
 import { defaultKunDataDir } from './runtime/kun-adapter'
 import { appendManagedLogLine } from './logger'
+import { guiSkillRootsForRuntime, normalizeSkillRootPath } from './services/skill-service'
 
 let child: ChildProcess | null = null
 let childLogCapture: KunChildLogCapture | null = null
@@ -285,8 +286,10 @@ export async function syncGuiManagedKunConfig(
   const search = objectValue(mcp.search)
   const attachments = objectValue(capabilities.attachments)
   const web = objectValue(capabilities.web)
+  const skills = objectValue(capabilities.skills)
   const storage = storageConfigForRuntime(runtime.storage)
   const mcpSearch = runtime.mcpSearch
+  const skillCapability = await skillCapabilityConfigForRuntime(skills, scheduleMcp?.settings)
   const next = {
     serve: {
       ...serve,
@@ -307,6 +310,7 @@ export async function syncGuiManagedKunConfig(
         enabled: web.enabled === false ? false : true,
         fetchEnabled: web.fetchEnabled === false ? false : true
       },
+      skills: skillCapability,
       mcp: {
         ...mcp,
         ...(scheduleMcp || mcpSearch.enabled ? { enabled: mcp.enabled === false ? false : true } : {}),
@@ -355,6 +359,39 @@ function buildGuiScheduleKunMcpServer(
     trustScope: 'user',
     timeoutMs: GUI_SCHEDULE_MCP_TIMEOUT_MS
   }
+}
+
+async function skillCapabilityConfigForRuntime(
+  existing: Record<string, unknown>,
+  settings?: AppSettingsV1
+): Promise<Record<string, unknown>> {
+  const roots = uniqueStrings([
+    ...stringArrayValue(existing.roots).map(normalizeSkillRootPath),
+    ...(await guiSkillRootsForRuntime(settings)).map((root) => root.path)
+  ])
+  return {
+    ...existing,
+    enabled: existing.enabled === false ? false : roots.length > 0 || existing.enabled === true,
+    roots,
+    legacySkillMd: existing.legacySkillMd === false ? false : true
+  }
+}
+
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : []
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const value of values) {
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    out.push(value)
+  }
+  return out
 }
 
 function modelConfigForRuntime(existing: Record<string, unknown>): Record<string, unknown> {
