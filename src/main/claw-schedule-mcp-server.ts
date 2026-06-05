@@ -14,7 +14,7 @@ function parseArgValue(argv: string[], flag: string): string {
 }
 
 function parseLaunchOptions(argv: string[]): McpLaunchOptions | null {
-  if (!argv.includes('--claw-schedule-mcp-server')) return null
+  if (!argv.includes('--gui-schedule-mcp-server') && !argv.includes('--claw-schedule-mcp-server')) return null
   const baseUrl = parseArgValue(argv, '--base-url').trim() || 'http://127.0.0.1:8787'
   const secret = parseArgValue(argv, '--secret').trim()
   return { baseUrl, secret }
@@ -77,10 +77,12 @@ export async function runClawScheduleMcpServerFromArgv(argv: string[]): Promise<
 
   const registerListTool = (name: string): void => {
     server.registerTool(name, {
-      description: 'List scheduled tasks managed by the currently running DeepSeek GUI app.'
+      description: name.startsWith('claw_')
+        ? 'Legacy alias. List scheduled tasks managed by the currently running DeepSeek GUI app.'
+        : 'List scheduled tasks managed by the currently running DeepSeek GUI app.'
     }, async () => {
       try {
-        const result = await postJson(options, '/claw/internal/schedule/list', {})
+        const result = await postJson(options, '/schedule/internal/list', {})
         const tasks = Array.isArray(result.tasks) ? result.tasks : []
         return textResult(
           tasks.length
@@ -98,7 +100,9 @@ export async function runClawScheduleMcpServerFromArgv(argv: string[]): Promise<
 
   const registerCreateTool = (name: string): void => {
     server.registerTool(name, {
-      description: 'Create a scheduled task in DeepSeek GUI. Supports one-time (`at`), daily, or interval schedules.',
+      description: name.startsWith('claw_')
+        ? 'Legacy alias. Create a scheduled task in DeepSeek GUI. Supports one-time (`at`), daily, or interval schedules.'
+        : 'Create a scheduled task in DeepSeek GUI. Supports one-time (`at`), daily, or interval schedules.',
       inputSchema: {
         title: z.string().min(1).describe('Short task title shown in the GUI'),
         prompt: z.string().min(1).describe('The prompt/instruction the agent should run at schedule time'),
@@ -108,17 +112,19 @@ export async function runClawScheduleMcpServerFromArgv(argv: string[]): Promise<
         every_minutes: z.number().int().min(1).max(10080).optional().describe('Interval in minutes, required when schedule_kind is `interval`'),
         workspace_root: z.string().optional().describe('Optional workspace directory override'),
         model: z.string().optional().describe('Optional model id, e.g. auto / deepseek-v4-pro / deepseek-v4-flash'),
+        reasoning_effort: z.enum(['off', 'low', 'medium', 'high', 'max']).optional().describe('Optional reasoning strength'),
         mode: z.enum(['agent', 'plan']).optional().describe('Execution mode'),
         enabled: z.boolean().optional().describe('Whether the task should be enabled immediately')
       }
     }, async (args) => {
       try {
-        const result = await postJson(options, '/claw/internal/schedule/create', {
+        const result = await postJson(options, '/schedule/internal/create', {
           input: {
             title: args.title,
             prompt: args.prompt,
             workspaceRoot: args.workspace_root,
             model: args.model,
+            reasoningEffort: args.reasoning_effort,
             mode: args.mode,
             enabled: args.enabled,
             schedule: {
@@ -144,7 +150,9 @@ export async function runClawScheduleMcpServerFromArgv(argv: string[]): Promise<
 
   const registerUpdateTool = (name: string): void => {
     server.registerTool(name, {
-      description: 'Update an existing DeepSeek GUI scheduled task.',
+      description: name.startsWith('claw_')
+        ? 'Legacy alias. Update an existing DeepSeek GUI scheduled task.'
+        : 'Update an existing DeepSeek GUI scheduled task.',
       inputSchema: {
         task_id: z.string().min(1).describe('Task id returned by gui_schedule_list or gui_schedule_create'),
         title: z.string().optional(),
@@ -152,6 +160,7 @@ export async function runClawScheduleMcpServerFromArgv(argv: string[]): Promise<
         enabled: z.boolean().optional(),
         workspace_root: z.string().optional(),
         model: z.string().optional(),
+        reasoning_effort: z.enum(['off', 'low', 'medium', 'high', 'max']).optional(),
         mode: z.enum(['agent', 'plan']).optional(),
         schedule_kind: z.enum(['manual', 'at', 'daily', 'interval']).optional(),
         at_time: z.string().optional(),
@@ -166,6 +175,7 @@ export async function runClawScheduleMcpServerFromArgv(argv: string[]): Promise<
         if (args.enabled !== undefined) patch.enabled = args.enabled
         if (args.workspace_root !== undefined) patch.workspaceRoot = args.workspace_root
         if (args.model !== undefined) patch.model = args.model
+        if (args.reasoning_effort !== undefined) patch.reasoningEffort = args.reasoning_effort
         if (args.mode !== undefined) patch.mode = args.mode
         if (
           args.schedule_kind !== undefined ||
@@ -180,7 +190,7 @@ export async function runClawScheduleMcpServerFromArgv(argv: string[]): Promise<
             ...(args.every_minutes !== undefined ? { everyMinutes: args.every_minutes } : {})
           }
         }
-        const result = await postJson(options, '/claw/internal/schedule/update', {
+        const result = await postJson(options, '/schedule/internal/update', {
           taskId: args.task_id,
           patch
         })
@@ -199,13 +209,15 @@ export async function runClawScheduleMcpServerFromArgv(argv: string[]): Promise<
 
   const registerDeleteTool = (name: string): void => {
     server.registerTool(name, {
-      description: 'Delete a scheduled task from DeepSeek GUI.',
+      description: name.startsWith('claw_')
+        ? 'Legacy alias. Delete a scheduled task from DeepSeek GUI.'
+        : 'Delete a scheduled task from DeepSeek GUI.',
       inputSchema: {
         task_id: z.string().min(1).describe('Task id returned by gui_schedule_list or gui_schedule_create')
       }
     }, async ({ task_id }) => {
       try {
-        await postJson(options, '/claw/internal/schedule/delete', { taskId: task_id })
+        await postJson(options, '/schedule/internal/delete', { taskId: task_id })
         return textResult(`Scheduled task deleted: ${task_id}`)
       } catch (error) {
         return errorResult(`Failed to delete scheduled task: ${error instanceof Error ? error.message : String(error)}`)
@@ -215,7 +227,18 @@ export async function runClawScheduleMcpServerFromArgv(argv: string[]): Promise<
   registerDeleteTool('claw_schedule_delete')
   registerDeleteTool('gui_schedule_delete')
 
+  // The `gui_plan_create` MCP tool has been retired in favour of the
+  // native Kun `create_plan` tool. See RETIRED_CLAW_GUI_PLAN_TOOL_NAMES
+  // for the list of removed tool names.
+
   const transport = new StdioServerTransport()
   await server.connect(transport)
   return true
 }
+
+/**
+ * List of MCP tool names that used to act as the GUI plan bridge. The
+ * names are kept here as a single source of truth for migration
+ * scripts; the actual tools are no longer registered.
+ */
+export const RETIRED_CLAW_GUI_PLAN_TOOL_NAMES: readonly string[] = ['gui_plan_create'] as const

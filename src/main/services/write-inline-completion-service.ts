@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import {
-  DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL,
   DEFAULT_WRITE_INLINE_COMPLETION_MAX_TOKENS,
-  DEFAULT_WRITE_INLINE_COMPLETION_MODEL,
-  getActiveAgentRuntimeSettings,
-  normalizeWriteInlineCompletionModel,
+  resolveWriteInlineCompletionApiKey,
+  resolveWriteInlineCompletionBaseUrl,
+  resolveWriteInlineCompletionModel,
   type AppSettingsV1
 } from '../../shared/app-settings'
 import {
@@ -112,8 +111,7 @@ function appendInlineCompletionPreflightFailure(
 }
 
 function resolveModel(request: WriteInlineCompletionRequest, settings: AppSettingsV1): string {
-  const trimmed = request.model?.trim() || settings.write.inlineCompletion.model.trim()
-  return normalizeWriteInlineCompletionModel(trimmed || DEFAULT_WRITE_INLINE_COMPLETION_MODEL)
+  return resolveWriteInlineCompletionModel(settings, request.model)
 }
 
 function resolveMode(request: WriteInlineCompletionRequest): WriteInlineCompletionMode {
@@ -542,7 +540,7 @@ export async function requestWriteInlineCompletion(
     return { ok: false, message: 'Inline completion is disabled.' }
   }
 
-  const apiKey = getActiveAgentRuntimeSettings(settings).apiKey.trim()
+  const apiKey = resolveWriteInlineCompletionApiKey(settings)
   if (!apiKey) {
     appendInlineCompletionPreflightFailure(startedAt, settings, request, 'Missing API key for inline completion.')
     return { ok: false, message: 'Missing API key for inline completion.' }
@@ -552,7 +550,7 @@ export async function requestWriteInlineCompletion(
   const mode = resolveMode(request)
   const actionMayEdit = Boolean(request.editCandidate && request.recentEdits?.length)
   const useChatCompletions = mode === 'edit' || actionMayEdit
-  const baseUrl = settings.write.inlineCompletion.baseUrl.trim() || DEFAULT_WRITE_INLINE_COMPLETION_BASE_URL
+  const baseUrl = resolveWriteInlineCompletionBaseUrl(settings)
   const url = useChatCompletions
     ? upstreamOpenAiChatCompletionsUrl(baseUrl)
     : upstreamDeepSeekFimCompletionsUrl(baseUrl)

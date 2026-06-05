@@ -3,9 +3,11 @@ import type {
   AppSettingsV1,
   ClawRunResult,
   ClawTaskFromTextResult,
-  ClawRuntimeStatus
+  ClawRuntimeStatus,
+  ScheduleRunResult,
+  ScheduleRuntimeStatus,
+  ScheduleTaskFromTextResult
 } from './app-settings'
-import type { DeepseekUpdateInfo, DeepseekUpdateInstallResult } from './deepseek-update'
 import type { EditorListResult, EditorOpenResult, OpenEditorPathOptions } from './editor'
 import type { GitBranchesResult } from './git-branches'
 import type {
@@ -16,15 +18,7 @@ import type {
   GuiUpdateState
 } from './gui-update'
 import type {
-  TerminalCreateOptions,
-  TerminalCreateResult,
-  TerminalDataPayload,
-  TerminalExitPayload,
-  TerminalInputPayload,
-  TerminalLifecyclePayload,
-  TerminalResizePayload
-} from './terminal-session'
-import type {
+  ClipboardImageReadResult,
   WorkspaceClipboardImageSavePayload,
   WorkspaceClipboardImageSaveResult,
   WorkspaceFileReadResult,
@@ -65,46 +59,6 @@ export type PathOpenResult = { ok: boolean; message?: string }
 export type SkillSaveResult = { ok: true; path: string } | { ok: false; message: string }
 export type DeepseekConfigFileResult = { path: string; content: string; exists: boolean }
 export type DeepseekConfigSaveResult = { ok: true; path: string }
-export type DeepseekRuntimeDiagnosticIssue = {
-  severity: 'info' | 'warning' | 'error'
-  code: string
-  title: string
-  message: string
-  path?: string
-  line?: number
-}
-export type DeepseekRuntimeDiagnosticsResult = {
-  checkedAt: string
-  settings: {
-    port: number
-    autoStart: boolean
-    binaryPath: string
-    baseUrl: string
-    approvalPolicy: string
-    sandboxMode: string
-    hasApiKey: boolean
-    hasRuntimeToken: boolean
-  }
-  binary: { ok: true; path: string } | { ok: false; message: string }
-  config: {
-    path: string
-    exists: boolean
-    content: string
-    issues: DeepseekRuntimeDiagnosticIssue[]
-  }
-  runtime: {
-    baseUrl: string
-    portOwner: {
-      pid: number
-      command: string
-      parentPid: number | null
-      parentCommand: string | null
-    } | null
-    health: { ok: boolean; status: number; body: string; message?: string }
-    threadApi: { ok: boolean; status: number; body: string; message?: string } | null
-  }
-  issues: DeepseekRuntimeDiagnosticIssue[]
-}
 export type TurnCompleteNotificationPayload = {
   threadId?: string
   title: string
@@ -121,21 +75,20 @@ export type ClawChannelMirrorResult =
   | { ok: true }
   | { ok: false; message: string }
 export type UpstreamModelsResult =
-  | { ok: true; modelIds: string[] }
+  | { ok: true; modelIds: string[]; modelGroups?: ModelProviderModelGroup[] }
   | { ok: false; message: string }
+export type ModelProviderModelGroup = {
+  providerId: string
+  label: string
+  modelIds: string[]
+}
 export type ClawImInstallQrResult =
-  | { ok: true; url: string; deviceCode: string; interval: number; expireIn: number }
+  | { ok: true; url: string; deviceCode: string; userCode: string; interval: number; expireIn: number }
   | { ok: false; message: string }
 export type ClawImInstallPollResult =
   | { done: true; kind: 'feishu'; appId: string; appSecret: string; domain: string }
+  | { done: true; kind: 'weixin'; accountId: string; sessionKey: string }
   | { done: false; error?: string }
-export type DeepseekSpawnResult = {
-  started: boolean
-  healthy: boolean
-  pid?: boolean
-  error?: string
-  message?: string
-}
 export type SseEventPayload = { streamId: string; data: unknown }
 export type SseEndPayload = { streamId: string }
 export type SseErrorPayload = { streamId: string; status?: number; message?: string }
@@ -148,36 +101,27 @@ export type DsGuiApi = {
   fetchUpstreamModels: () => Promise<UpstreamModelsResult>
   getClawStatus: () => Promise<ClawRuntimeStatus>
   runClawTask: (taskId: string) => Promise<ClawRunResult>
+  getScheduleStatus: () => Promise<ScheduleRuntimeStatus>
+  runScheduleTask: (taskId: string) => Promise<ScheduleRunResult>
   startClawImInstallQr: (
-    provider: 'feishu',
+    provider: 'feishu' | 'weixin',
     options?: { isLark?: boolean }
   ) => Promise<ClawImInstallQrResult>
   pollClawImInstall: (
-    provider: 'feishu',
+    provider: 'feishu' | 'weixin',
     deviceCode: string
   ) => Promise<ClawImInstallPollResult>
-  deepseekSpawnIfNeeded: () => Promise<DeepseekSpawnResult>
-  prepareDeepseekBinary: () => Promise<{ ok: true; path: string } | { ok: false; message: string }>
-  checkDeepseekUpdate: () => Promise<DeepseekUpdateInfo>
-  installDeepseekUpdate: () => Promise<DeepseekUpdateInstallResult>
   pickWorkspaceDirectory: (defaultPath?: string) => Promise<WorkspacePickResult>
   saveSkillFile: (rootPath: string, skillName: string, content: string) => Promise<SkillSaveResult>
   openSkillRoot: (rootPath: string) => Promise<PathOpenResult>
   getDeepseekConfigFile: () => Promise<DeepseekConfigFileResult>
   setDeepseekConfigFile: (content: string) => Promise<DeepseekConfigSaveResult>
   openDeepseekConfigDir: () => Promise<PathOpenResult>
-  diagnoseDeepseekRuntime: () => Promise<DeepseekRuntimeDiagnosticsResult>
   getGitBranches: (workspaceRoot: string) => Promise<GitBranchesResult>
   switchGitBranch: (workspaceRoot: string, branch: string) => Promise<GitBranchesResult>
   createAndSwitchGitBranch: (workspaceRoot: string, branch: string) => Promise<GitBranchesResult>
   listEditors: () => Promise<EditorListResult>
   openEditorPath: (options: OpenEditorPathOptions) => Promise<EditorOpenResult>
-  createTerminalSession: (options: TerminalCreateOptions) => Promise<TerminalCreateResult>
-  writeTerminalSession: (payload: TerminalInputPayload) => Promise<boolean>
-  resizeTerminalSession: (payload: TerminalResizePayload) => Promise<boolean>
-  closeTerminalSession: (payload: TerminalLifecyclePayload) => Promise<boolean>
-  onTerminalData: (handler: (payload: TerminalDataPayload) => void) => () => void
-  onTerminalExit: (handler: (payload: TerminalExitPayload) => void) => () => void
   listWorkspaceDirectory: (options: WorkspaceDirectoryTarget) => Promise<WorkspaceDirectoryListResult>
   resolveWorkspaceFile: (options: WorkspaceFileTarget) => Promise<WorkspaceFileResolveResult>
   readWorkspaceFile: (options: WorkspaceFileTarget) => Promise<WorkspaceFileReadResult>
@@ -190,6 +134,7 @@ export type DsGuiApi = {
   saveWorkspaceClipboardImage: (
     payload: WorkspaceClipboardImageSavePayload
   ) => Promise<WorkspaceClipboardImageSaveResult>
+  readClipboardImage: () => Promise<ClipboardImageReadResult>
   renameWorkspaceEntry: (
     payload: WorkspaceEntryRenamePayload
   ) => Promise<WorkspaceEntryRenameResult>
@@ -214,6 +159,11 @@ export type DsGuiApi = {
   onSseEnd: (handler: (payload: SseEndPayload) => void) => () => void
   onSseError: (handler: (payload: SseErrorPayload) => void) => () => void
   onClawChannelActivity: (handler: (payload: ClawChannelActivityPayload) => void) => () => void
+  mirrorClawChannelMessage: (
+    threadId: string,
+    text: string,
+    direction: 'user' | 'assistant'
+  ) => Promise<ClawChannelMirrorResult>
   mirrorClawChannelMessageToFeishu: (
     threadId: string,
     text: string,
@@ -223,6 +173,10 @@ export type DsGuiApi = {
     text: string,
     options?: { channelId?: string; modelHint?: string; mode?: 'agent' | 'plan' }
   ) => Promise<ClawTaskFromTextResult>
+  createScheduleTaskFromText: (
+    text: string,
+    options?: { workspaceRoot?: string; modelHint?: string; mode?: 'agent' | 'plan' }
+  ) => Promise<ScheduleTaskFromTextResult>
   openExternal: (url: string) => Promise<void>
   showTurnCompleteNotification: (
     payload: TurnCompleteNotificationPayload

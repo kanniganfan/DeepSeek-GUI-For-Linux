@@ -1,36 +1,37 @@
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   buildSyncedClawScheduleMcpJson,
   clawScheduleMcpSettingsChanged,
   removeLegacyClawScheduleTomlConfig,
+  resolveDeepseekConfigPath,
+  resolveKunConfigPath,
+  resolveKunMcpJsonPath,
   syncClawScheduleMcpConfig,
   type ClawScheduleMcpLaunchConfig
 } from './claw-schedule-mcp-config'
-import { defaultClawSettings, defaultWriteSettings, type AppSettingsV1 } from '../shared/app-settings'
+import {
+  defaultClawSettings,
+  defaultKunRuntimeSettings,
+  defaultModelProviderSettings,
+  defaultScheduleSettings,
+  defaultWriteSettings,
+  type AppSettingsV1
+} from '../shared/app-settings'
 
-function createSettings(patch: Partial<AppSettingsV1['claw']['im']> = {}): AppSettingsV1 {
+function createSettings(patch: Partial<AppSettingsV1['schedule']['internal']> = {}): AppSettingsV1 {
   const claw = defaultClawSettings()
+  const schedule = defaultScheduleSettings()
   return {
     version: 1,
     locale: 'en',
     theme: 'system',
     uiFontScale: 'small',
-    agentProvider: 'codewhale',
+    provider: defaultModelProviderSettings(),
     agents: {
-      codewhale: {
-        binaryPath: '',
-        port: 7878,
-        autoStart: true,
-        apiKey: '',
-        baseUrl: 'https://api.deepseek.com/beta',
-        runtimeToken: '',
-        extraCorsOrigins: [],
-        approvalPolicy: 'auto',
-        sandboxMode: 'workspace-write'
-      }
+      kun: defaultKunRuntimeSettings()
     },
     workspaceRoot: '/tmp/workspace',
     log: {
@@ -41,6 +42,13 @@ function createSettings(patch: Partial<AppSettingsV1['claw']['im']> = {}): AppSe
       turnComplete: true
     },
     write: defaultWriteSettings(),
+    schedule: {
+      ...schedule,
+      internal: {
+        ...schedule.internal,
+        ...patch
+      }
+    },
     guiUpdate: {
       channel: 'stable'
     },
@@ -51,8 +59,7 @@ function createSettings(patch: Partial<AppSettingsV1['claw']['im']> = {}): AppSe
         ...claw.im,
         enabled: true,
         port: 8787,
-        secret: '',
-        ...patch
+        secret: ''
       }
     }
   }
@@ -65,7 +72,13 @@ const launch: ClawScheduleMcpLaunchConfig = {
 }
 
 describe('claw schedule MCP config', () => {
-  it('writes the claw_schedule server to the MCP JSON config shape used by DeepSeek TUI', () => {
+  it('uses Kun config files by default', () => {
+    expect(resolveKunConfigPath()).toBe(join(homedir(), '.kun', 'config.toml'))
+    expect(resolveKunMcpJsonPath()).toBe(join(homedir(), '.kun', 'mcp.json'))
+    expect(resolveDeepseekConfigPath()).toBe(resolveKunConfigPath())
+  })
+
+  it('writes the gui_schedule server to the Kun MCP JSON config shape', () => {
     const settings = createSettings({ port: 9787, secret: 'top-secret' })
     const synced = buildSyncedClawScheduleMcpJson(
       {
@@ -87,11 +100,11 @@ describe('claw schedule MCP config', () => {
       context7: {
         command: 'npx'
       },
-      claw_schedule: {
+      gui_schedule: {
         command: launch.execPath,
         args: [
           launch.appPath,
-          '--claw-schedule-mcp-server',
+          '--gui-schedule-mcp-server',
           '--base-url',
           'http://127.0.0.1:9787',
           '--secret',
@@ -148,10 +161,10 @@ describe('claw schedule MCP config', () => {
 
   it('syncs mcp.json and cleans the old config.toml entry on disk', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ds-gui-mcp-'))
-    const deepseekDir = join(root, '.deepseek')
-    const configTomlPath = join(deepseekDir, 'config.toml')
-    const mcpJsonPath = join(deepseekDir, 'mcp.json')
-    await mkdir(deepseekDir, { recursive: true })
+    const kunDir = join(root, '.kun')
+    const configTomlPath = join(kunDir, 'config.toml')
+    const mcpJsonPath = join(kunDir, 'mcp.json')
+    await mkdir(kunDir, { recursive: true })
     await writeFile(
       configTomlPath,
       [
@@ -192,10 +205,32 @@ describe('claw schedule MCP config', () => {
         existing: {
           command: '/bin/echo'
         },
-        claw_schedule: {
+        gui_schedule: {
           command: launch.execPath,
-          args: [launch.appPath, '--claw-schedule-mcp-server', '--base-url', 'http://127.0.0.1:8787']
+          args: [launch.appPath, '--gui-schedule-mcp-server', '--base-url', 'http://127.0.0.1:8788']
         }
+      }
+    })
+  })
+
+  it('migrates old claw_schedule JSON entries to gui_schedule', () => {
+    const synced = buildSyncedClawScheduleMcpJson(
+      {
+        servers: {
+          claw_schedule: {
+            command: 'old',
+            args: ['--claw-schedule-mcp-server']
+          }
+        }
+      },
+      createSettings(),
+      launch
+    )
+
+    expect((synced.servers as Record<string, unknown>).claw_schedule).toBeUndefined()
+    expect(synced.servers).toMatchObject({
+      gui_schedule: {
+        command: launch.execPath
       }
     })
   })

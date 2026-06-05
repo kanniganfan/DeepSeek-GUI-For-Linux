@@ -6,14 +6,14 @@
 
 [简体中文](./README.md) | English
 
-> Bring the local CodeWhale agent into a desktop workbench: **Code** for development, **Write** for documents, **Claw** for IM automation—chat, change review, Skill/MCP management, and updates in one graphical app.
+> Bring the local Kun runtime into a desktop workbench: **Code** for project work, **Write** for documents, and **Connect phone** for IM automation and scheduled tasks. Chat, plan, goals, code review, Skill/MCP management, and updates live in one graphical app.
 
 [Website](https://deepseek-gui.com) | [Download](https://deepseek-gui.com)
 
 [![GitHub release](https://img.shields.io/github/v/release/XingYu-Zhong/DeepSeek-GUI?label=github)](https://github.com/XingYu-Zhong/DeepSeek-GUI/releases)
 [![License](https://img.shields.io/github/license/XingYu-Zhong/DeepSeek-GUI)](./LICENSE)
 
-DeepSeek GUI is a local desktop workbench for developers and frequent AI users. It builds on [CodeWhale](https://github.com/Hmbown/CodeWhale) and turns the terminal agent experience into an easier, longer-lived app: choose a workspace, start a task, watch reasoning and tool calls stream in, review file changes, and approve sensitive actions when needed.
+DeepSeek GUI is a local desktop workbench for developers and frequent AI users. It uses Kun as the only runtime and turns the terminal agent experience into an easier, longer-lived app: choose a workspace, start a task, watch reasoning and tool calls stream in, review file changes, and approve sensitive actions when needed.
 
 The goal is not to ship another chat wrapper. The goal is to make DeepSeek feel like a reliable desktop partner for real project work.
 
@@ -26,30 +26,112 @@ The goal is not to ship another chat wrapper. The goal is to make DeepSeek feel 
 
 ## What We Built
 
-- A desktop app around the CodeWhale local runtime, with default runtime auto-start and management.
+- A desktop app around the Kun local runtime, with default runtime auto-start and management.
 - A full chat workbench with multiple sessions, streaming output, history, interruption, and resend flows.
 - Local workspace integration so the agent can read, edit, and create files in real projects.
 - Change review surfaces that make every file modification visible and inspectable.
 - First-run onboarding, settings, language/theme/font controls, notifications, local logs, and update entry points.
 - Graphical Skill and MCP management so users can extend the agent without hand-editing every config file.
-- Claw background automation with Feishu / Lark integration, dedicated IM agents, local webhook / relay support, and scheduled tasks.
+- Connect phone automation with Feishu / Lark / WeChat integration, dedicated IM agents, local webhook / relay support, and scheduled tasks.
 - A dedicated Write workbench with writing spaces, a Markdown file tree, live editing/preview, inline completion, and selection-based inline agent actions.
-- Pre-built macOS and Windows installers; Linux/Unix users can build from source.
+- New requirement drafts, plans, thread todos, long-running goals, and code review so tasks can move from idea to execution to review.
+- Pre-built macOS, Windows, and Linux installers; source builds remain available.
 
 ## Highlights
 
 - **Desktop chat workbench**: multi-session chat with streamed replies, reasoning, tool calls, approval requests, and file changes in one place.
 - **Project workspaces**: choose a local directory for each task, organize sessions by workspace, preview files, open files in your editor, and pick Git branches.
+- **New requirements**: draft background, goals, and acceptance criteria; ask Requirement AI to clarify missing questions or research options; then generate an implementation plan.
+- **Plans and todos**: `/plan` and New requirement both create editable plan files, while the right-side Plan panel syncs thread todos for trackable execution.
+- **Goals**: `/goal` sets a long-running objective for the current thread, with pause, resume, clear, and complete states so the agent can keep working toward the same outcome.
+- **Code review**: `/review` can inspect current uncommitted changes, a base branch diff, a commit, or custom review instructions, with findings shown as review cards.
+- **Side conversations and thread control**: `/btw` opens a context-inheriting side conversation; threads also support compact, fork, archive, and restore flows.
 - **Change review**: inline diffs and a side review panel help you understand exactly what the agent changed.
 - **Controlled permissions**: choose read-only, workspace-write, full-access, or external sandbox modes, and decide when tool calls require approval.
-- **Managed runtime**: use the bundled CodeWhale by default, or point the app at your own `codewhale` executable.
+- **Managed runtime**: use the bundled Kun by default, or point the app at your own `kun` executable.
 - **Skill and MCP support**: create Skills, edit MCP config, add common tools, and open the related folders from the UI.
-- **Claw background automation**: run a background agent alongside normal chat, with current support for Feishu / Lark, IM webhook / relay flows, and scheduled tasks.
+- **Feature-flagged agent extensions**: Kun can enable MCP, web fetch/search, Skills, standalone CLI use, image attachments, cross-session memory, and delegated subagents by config; Settings shows the runtime-reported capability and diagnostics state.
+- **Connect phone**: run a background agent alongside normal chat, with current support for Feishu / Lark / WeChat, IM webhook / relay flows, and scheduled tasks.
+- **Scheduled tasks**: create one-time, daily, interval, or manual tasks with their own workspace, model, and reasoning effort so Kun can run while the computer is awake.
 - **Write mode**: manage `~/.deepseekgui/write_workspace` and custom writing spaces, browse Markdown files, use live Markdown editing, preview relative images, get DeepSeek FIM short completion / inspiration completion with optional cross-document BM25 + keyword retrieval, export the current document as `HTML / PDF / DOC / DOCX`, and invoke the writing assistant directly from selected text.
+- **Token ROI optimization**: Kun keeps prompt prefixes stable, tracks DeepSeek-native cache hit/miss fields, compacts context and tool output, and can use MCP search to discover tools progressively instead of sending irrelevant tool tokens to the model.
 - **Friendly first launch**: choose language, add your DeepSeek API key, and optionally set a compatible Base URL.
 - **Local-first**: preferences, sessions, logs, and runtime config stay on your machine; model calls use your own DeepSeek API key.
 - **English and Chinese UI**: switch languages from Settings at any time.
-- **Cross-platform use**: macOS `.dmg/.zip` and Windows `.exe`; Linux/Unix users can build from source.
+- **Cross-platform use**: macOS `.dmg/.zip`, Windows `.exe`, and Linux `.AppImage`; source builds remain available.
+
+## Runtime: Kun
+
+The only active local agent runtime in DeepSeek-GUI today is
+**Kun** (shipped under `kun/`), a self-contained
+TypeScript package that boots a local HTTP/SSE server as the
+single boundary between the GUI and the agent loop.
+
+The name Kun is inspired by the great fish in Zhuangzi's line,
+"In the northern sea there is a fish; its name is Kun." The idea is
+not a temporary chat shell, but a deeper local runtime that can carry
+longer context, richer tools, and sustained project collaboration.
+
+Kun's operating principle is to raise the ROI of every token. The
+user's context budget should go toward requirements, code, decisions,
+and results, not repeated tool schemas, runaway tool output, invalid
+history, or prefixes that could have been reused from cache.
+
+Kun fuses two designs that have been battle-tested in the
+wild:
+
+- **The local-HTTP-serve boundary borrowed from [CodeWhale](https://github.com/Hmbown/CodeWhale)**: `/v1/threads`, `/v1/threads/{id}/turns`, `/v1/threads/{id}/events` (SSE), `/v1/approvals/{id}`, `/v1/usage`, `/v1/workspace/status`, `/v1/runtime/info`, `/health`. This shape keeps the GUI and the runtime completely decoupled: runtime upgrades, debugging, and replacement never require GUI changes.
+- **The cache-first agent loop borrowed from Reasonix**: immutable prompt prefix (with sha256 fingerprint), append-only session log, bounded TTL/LRU cache, inflight tracking with guaranteed cleanup, mid-turn steering queue, context compaction that preserves pinned constraints, and cache/usage telemetry.
+- **Token economy and tool-context optimization**: Kun stabilizes system prompts and tool schemas, reads DeepSeek-native cache hit/miss fields, bounds long tool results, long arguments, base64 payloads, and repeated tool loops, and can use `mcp_search` / `mcp_describe` / `mcp_call` to discover MCP tools progressively when a tool catalog is too large to advertise all at once.
+
+> Thanks to the [Hmbown/CodeWhale](https://github.com/Hmbown/CodeWhale)
+> team and the Reasonix team for sharing the runnable references
+> that made these two design pillars testable in the first place.
+> Nearly every performance trait of Kun — cache hit rate,
+> token replay, reconnect, interruptable approvals — can be
+> traced back to those two projects. The full design rationale
+> and the borrow map live in
+> [`docs/kun-architecture.md`](docs/kun-architecture.md).
+
+If you want the dedicated write-up for cache behavior, including
+stable prefixes, tool schema canonicalization, DeepSeek native
+hit/miss accounting, tool-pair healing, and validation strategy, see
+[`docs/kun-cache-optimization.md`](docs/kun-cache-optimization.md).
+
+Kun's larger agent capabilities are controlled by feature flags:
+`capabilities.mcp` connects third-party MCP servers,
+`capabilities.web` exposes `web_fetch` / `web_search`,
+`capabilities.skills` discovers `skill.json` and legacy `SKILL.md`,
+`capabilities.attachments` enables image attachments with text-model fallback, `capabilities.memory`
+enables cross-session recall, and `capabilities.subagents` allows
+budgeted delegated child runs. `kun run`, `kun chat`, and `kun exec`
+can run without the GUI. The GUI reads `/v1/runtime/info` and
+`/v1/runtime/tools` in Settings to show what is actually available.
+These capabilities are off by config or limited by model capability
+until explicitly enabled; examples and troubleshooting live in
+[`kun/README.md`](kun/README.md).
+
+Simplified architecture:
+
+```text
+Renderer (React)
+  → KunRuntimeProvider
+  → preload: dsGui.runtimeRequest / startSse
+  → main: LocalHttpRuntimeAdapter
+  → kun serve (HTTP + SSE)
+  → cache-first AgentLoop
+```
+
+Settings live under **Settings → Agent runtime**: binary path, port,
+auto-start, API key, base URL, runtime token, data dir, model,
+approval policy, sandbox mode, and the insecure switch. If an older
+provider was saved before, settings are migrated into
+`agents.kun` on load; after saving, only Kun settings
+remain.
+
+The full endpoint list, CLI flags, environment variables, data dir
+layout, and SSE event schema are documented in
+[`kun/README.md`](kun/README.md).
 
 ## Who It Is For
 
@@ -60,9 +142,13 @@ The goal is not to ship another chat wrapper. The goal is to make DeepSeek feel 
 
 ---
 
-## Three Workbench Modes
+## Workbench And Entry Points
 
-DeepSeek GUI exposes three modes in the top-left sidebar: **Code**, **Write**, and **Claw**. They share the same DeepSeek runtime and settings, but keep sessions, workspaces, and layouts separate so you can switch by task.
+DeepSeek GUI is centered on two main workbenches, **Code** and **Write**,
+with additional entry points for **Connect phone**, **Scheduled tasks**,
+and **Plugins / Skills / MCP**. They share the same Kun runtime and
+settings, but keep sessions, workspaces, and layouts separate so you
+can switch by task.
 
 ### Code Mode
 
@@ -74,6 +160,8 @@ The development workbench for real codebases: bind a local project directory, re
 
 - Organize multiple agent sessions by workspace, with streamed reasoning, tool calls, and file changes in one view.
 - Inline diffs, a change-review panel, and permission modes from read-only to full access.
+- New requirement drafts, `/plan`, the right-side Plan panel, thread todos, and `/goal` help complex work move from clarification to planning to execution.
+- `/review`, `/btw`, thread compaction, thread forking, archive, and restore support longer-lived project conversations.
 - Quick-start cards for common tasks such as project mapping, bug fixing, implementation planning, and UI polish.
 
 ### Write Mode
@@ -89,17 +177,18 @@ A dedicated Markdown writing workbench that keeps writing files, save state, and
 - Export the current Markdown document from the toolbar as `HTML / PDF / DOC / DOCX`, with best-effort preservation for headings, lists, code blocks, tables, and local images.
 - DeepSeek FIM short and inspiration completion, plus selection-based inline agent actions and a right-side writing assistant for summaries, outlines, and polish.
 
-### Claw Mode
+### Connect Phone
 
-Background automation and IM integration, so agents can keep handling messages and scheduled jobs outside normal chat.
+Background automation and IM integration, so Kun can keep handling phone messages and scheduled jobs outside normal desktop chat.
 
 <p align="center">
-  <img src="src/asset/img/clawmode.png" alt="DeepSeek GUI Claw mode" width="860">
+  <img src="src/asset/img/clawmode.png" alt="DeepSeek GUI Connect phone" width="860">
 </p>
 
-- Configure dedicated agents for Feishu / Lark and other channels, each with its own profile, default model, and workspace.
+- Configure dedicated agents for Feishu / Lark / WeChat and other channels, each with its own profile, default model, and workspace.
 - Every IM agent gets its own thread, so you can debug replies and tool calls directly in the GUI.
-- Local webhook / relay support and scheduled tasks for team workflows and automation.
+- Local webhook / relay support for team workflows and personal automation.
+- Scheduled tasks can run once, daily, on an interval, or manually. Each task creates a dedicated Kun thread and sends its configured prompt.
 
 ---
 
@@ -113,8 +202,7 @@ Download the latest build from [GitHub Releases](https://github.com/XingYu-Zhong
 | --- | --- |
 | macOS | `.dmg` or `.zip`, Intel and Apple Silicon |
 | Windows | `.exe`, NSIS installer, x64 |
-
-Linux/Unix pre-built downloads are currently not published. Linux users can build from source; because the built-in terminal depends on the native `node-pty` module, build Linux packages on Linux instead of cross-packaging them from macOS or Windows.
+| Linux | `.AppImage`, x64 |
 
 On first launch, enter your [DeepSeek API key](https://platform.deepseek.com/api_keys). If you use a DeepSeek/OpenAI-compatible endpoint, you can set a custom Base URL in Settings.
 
@@ -159,9 +247,9 @@ Typical flow (**Code mode**):
 - Allow or deny actions that require approval.
 - Inspect changes in the review panel before deciding what to do next.
 
-See [Three Workbench Modes](#three-workbench-modes) above for Claw and Write details. Quick start:
+See [Workbench And Entry Points](#workbench-and-entry-points) above for Connect phone and Write details. Quick start:
 
-- **Claw**: enable background automation in Settings → add a Feishu / Lark connection → configure agent profile, model, and workspace → optionally enable webhook / relay or scheduled tasks.
+- **Connect phone**: enable background automation in Settings → add a Feishu / Lark / WeChat connection → configure agent profile, model, and workspace → optionally enable webhook / relay or scheduled tasks.
 - **Write**: switch to Write mode → use the default writing space or add a new one → write in the Live editor with completion, selection inline agent, and the right-side writing assistant.
 
 ## Usage and Settings
@@ -172,9 +260,9 @@ Settings manages:
 - Auto-start for the local runtime, plus optional custom `deepseek` path.
 - Tool approval policy and filesystem access mode.
 - Default workspace, language, theme, font size, and completion notifications.
-- GUI updates, CodeWhale updates, and local error logs.
+- GUI updates and local error logs.
 - Skill creation, Skill folders, and MCP config editing.
-- Claw background automation, Feishu / Lark connections, webhook / relay settings, and scheduled tasks.
+- Connect phone automation, Feishu / Lark / WeChat connections, webhook / relay settings, and scheduled tasks.
 
 Keyboard shortcuts:
 
@@ -192,8 +280,8 @@ Write mode extends DeepSeek GUI from a code/chat workbench into a long-form writ
 - Workspaces and file tree: textide inspired the writing-space model, keeping writing files, active file state, save status, and AI context separate from code sessions.
 - Markdown live editing: openhanako inspired the CodeMirror decorations approach where the active line stays editable as Markdown source while inactive lines render headings, tasks, images, dividers, and tables through widgets.
 - Selection inline agent: openhanako inspired the selection-capture and floating-input interaction, so selected text can be sent with file path, line numbers, and bounded original text as structured context.
-- AI session isolation: Write still reuses normal CodeWhale agent threads, but the GUI keeps a local write thread registry per writing space so write conversations do not pollute code/claw sidebars.
-- Text completion: writing completion bypasses the local TUI serve runtime and calls the DeepSeek FIM Completion API directly for low-latency ghost text. Short completion uses a short debounce, small token budget, and strict local filtering; inspiration completion uses a longer pause, larger token budget, and only runs at line ends or paragraph boundaries. Before completion, the app builds a short-TTL lightweight index over Markdown / text files in the writing space, retrieves cross-document snippets with BM25 + keyword matching, and injects them as a hidden Markdown comment so terminology, facts, and style stay consistent.
+- AI session isolation: Write uses Kun threads, but the GUI keeps a local write thread registry per writing space so write conversations do not pollute Code / Connect phone sidebars.
+- Text completion: writing completion bypasses the local Kun serve runtime (**Kun** is the bundled local HTTP/SSE agent runtime, the single boundary between the GUI and the agent loop — see the [Runtime: Kun](#runtime-kun) section above for details) and calls the DeepSeek FIM Completion API directly for low-latency ghost text. Short completion uses a short debounce, small token budget, and strict local filtering; inspiration completion uses a longer pause, larger token budget, and only runs at line ends or paragraph boundaries. Before completion, the app builds a short-TTL lightweight index over Markdown / text files in the writing space, retrieves cross-document snippets with BM25 + keyword matching, and injects them as a hidden Markdown comment so terminology, facts, and style stay consistent.
 
 ---
 
@@ -232,14 +320,13 @@ By default, uninstalling removes the app but keeps local settings, sessions, and
 | Windows | `%APPDATA%\DeepSeek GUI` |
 | Linux | `~/.config/DeepSeek GUI` |
 
-CodeWhale shared config usually lives in `~/.deepseek`. Check it before deleting, because it may contain API key, MCP, or Skill settings you still need.
+Kun data lives under `~/.deepseekgui/kun` or the configured Kun data dir. Check it before deleting, because it may contain sessions, MCP, or Skill settings you still need.
 
 ---
 
 ## Updates
 
-- For regular users: macOS/Windows can check GUI updates in Settings or download the latest installer from [GitHub Releases](https://github.com/XingYu-Zhong/DeepSeek-GUI/releases); Linux/Unix users should build from source.
-- For the CodeWhale runtime: when the GUI manages the runtime, Settings can check and upgrade the bundled CodeWhale runtime.
+- For regular users: check GUI updates in Settings or download the latest installer from [GitHub Releases](https://github.com/XingYu-Zhong/DeepSeek-GUI/releases).
 
 ## Contributing
 
@@ -247,9 +334,9 @@ Contributions are welcome for bug fixes, UI/UX improvements, documentation, loca
 
 Project conventions:
 
-- The current default collaboration branch is `develop`.
+- Day-to-day collaboration and integration happens on `develop`; stable releases land on `master`.
 - Start features and fixes from the latest `develop`, preferably on a short-lived feature branch.
-- Open pull requests into `develop` by default; maintainers merge reviewed changes into `master`.
+- Open pull requests into `develop` by default; maintainers merge reviewed changes into `master` for release.
 - Align on scope first for larger or riskier changes.
 - Run `npm run typecheck`, `npm run build`, and `npm run test` before opening a PR.
 - Include a video or GIF when the UI changes.
@@ -264,10 +351,9 @@ See [CONTRIBUTING.md](./docs/CONTRIBUTING.md) and [DEVELOPMENT.md](./docs/DEVELO
 npm run build           # production build
 npm run dist:mac        # macOS packages
 npm run dist:win        # Windows installer
-npm run dist:linux      # Linux AppImage; run this on Linux
+npm run dist:linux      # Linux AppImage
+npm run release:all     # build macOS/Windows/Linux and create a GitHub release on macOS
 ```
-
-Linux/Unix pre-built downloads are not published for now. If you need a Linux build, install dependencies and run `npm run dist:linux` in the target Linux environment; the built-in terminal depends on `node-pty`, and cross-packaging can make terminal startup fail.
 
 For the full development workflow, see [DEVELOPMENT.md](./docs/DEVELOPMENT.md).
 
@@ -275,21 +361,29 @@ For the full development workflow, see [DEVELOPMENT.md](./docs/DEVELOPMENT.md).
 
 | Doc | Contents |
 | --- | --- |
-| [CONTRIBUTING.md](docs/CONTRIBUTING.md) | Contribution guide |
-| [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local development workflow |
+| [docs/kun-architecture.en.md](docs/kun-architecture.en.md) | Single-Kun runtime plan, GUI removal scope, HTTP/SSE contract, and legacy agent retirement notes |
+| [docs/kun-cache-optimization.en.md](docs/kun-cache-optimization.en.md) | Kun cache optimization, token economy, MCP search, tool-output compaction, and usage savings |
+| [docs/kun-contributing.en.md](docs/kun-contributing.en.md) | Kun contribution guide: hexagonal architecture, design patterns (Ports & Adapters / Functional Core Imperative Shell / event sourcing / explicit DI / composition root), four typical PR scenarios |
+| [kun/README.md](kun/README.md) | Kun package: CLI, env, data dir, HTTP API |
+| [CONTRIBUTING.en.md](docs/CONTRIBUTING.en.md) | Contribution guide |
+| [DEVELOPMENT.en.md](docs/DEVELOPMENT.en.md) | Local development workflow |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community code of conduct |
 | [SECURITY.md](SECURITY.md) | Security disclosure policy |
-
-For the underlying runtime, see [CodeWhale](https://github.com/Hmbown/CodeWhale).
 
 ---
 
 ## Thanks
 
-- [CodeWhale](https://github.com/Hmbown/CodeWhale): the local agent runtime behind the app.
-- [LobsterAI](https://github.com/netease-youdao/LobsterAI): its IM management, QR binding, agent binding, and customizable agent-profile flows inspired the Claw IM integration in this project.
-- OpenHanako and textide: their Markdown live editing, writing-space, and selection inline-agent patterns heavily informed Write mode.
-- [DeepSeek](https://github.com/deepseek-ai): for the models and API.
+Kun stands on the shoulders of two prior projects:
+
+- **[CodeWhale](https://github.com/Hmbown/CodeWhale)** — the local HTTP serve boundary. The `/v1/threads`, `/v1/threads/{id}/turns`, `/v1/threads/{id}/events` (SSE), `/v1/approvals/{id}`, `/v1/usage`, `/v1/workspace/status`, `/v1/runtime/info`, `/health` URL shape comes directly from CodeWhale's `serve --http`. Keeping the GUI ↔ runtime boundary as a single standardized, cross-language, cross-process interface lets us reason about agent behavior the same way we reason about a network protocol.
+- **Reasonix** — the cache-first agent loop. `ImmutablePrefix` (with sha256 fingerprint) and its explicit mutation API, `AppendOnlySessionLog` (in-memory window + JSONL on disk), `LruCache` / `TtlLruCache`, `InflightTracker` with `finally`-block cleanup, `SteeringQueue` for mid-turn user guidance, `ContextCompactor` that preserves pinned constraints, and `UsageCounter` + `CacheTelemetry` are direct TypeScript ports and refinements of Reasonix's design prototypes. Reasonix's split between reasoning events and assistant text, the `tool_call` / `tool_result` pairing via `callId`, and the usage replay pattern also flow directly into the Kun event contract.
+
+We are also grateful to:
+
+- **[LobsterAI](https://github.com/netease-youdao/LobsterAI)**: its IM management, QR binding, agent binding, and customizable agent-profile flows inspired the Connect phone integration in this project.
+- **OpenHanako and textide**: their Markdown live editing, writing-space, and selection inline-agent patterns heavily informed Write mode.
+- **[DeepSeek](https://github.com/deepseek-ai)**: for the models and API.
 - Everyone who contributes issues, ideas, code, and documentation to DeepSeek GUI.
 
 > [!NOTE]

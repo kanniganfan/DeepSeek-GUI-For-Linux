@@ -11,8 +11,8 @@ import { useChatStore } from '../../store/chat-store'
 import { StreamdownCode } from './StreamdownCode'
 
 /**
- * Tuned for faster, cleaner streaming:
- * - keep per-character reveal for CJK readability
+ * Tuned for faster, cleaner single-line streaming:
+ * - keep per-character reveal for short CJK/plain text
  * - use a quick fade instead of blur
  * - reduce stagger so chunks don't "crawl" across the screen
  */
@@ -75,7 +75,7 @@ function StreamdownLink({
 
     if (isExternal && href && typeof window.dsGui?.openExternal === 'function') {
       event.preventDefault()
-      void window.dsGui.openExternal(href)
+      void window.dsGui.openExternal(href).catch(() => undefined)
     }
   }
 
@@ -87,7 +87,7 @@ function StreamdownLink({
         void window.dsGui?.logError?.('editor-open', 'Failed to open file reference', {
           message: result.message,
           target: resolvedFileTarget
-        })
+        })?.catch(() => undefined)
       }
     })
   }
@@ -115,12 +115,14 @@ const BLOCK_MARKDOWN_REGEX =
 
 const INLINE_STRUCTURED_MARKDOWN_REGEX =
   /`[^`\n]+`|!\[[^\]]*]\([^)\n]+\)|\[[^\]]+]\([^)\n]+\)/
+const MULTILINE_TEXT_REGEX = /\r?\n/
 const MAX_ANIMATED_STREAMING_CHARS = 600
 
-function shouldAnimateStreamingText(text: string): boolean {
+export function shouldAnimateStreamingText(text: string): boolean {
   const trimmed = text.trim()
   if (!trimmed) return false
   if (trimmed.length > MAX_ANIMATED_STREAMING_CHARS) return false
+  if (MULTILINE_TEXT_REGEX.test(trimmed)) return false
   return !(
     BLOCK_MARKDOWN_REGEX.test(trimmed) ||
     INLINE_STRUCTURED_MARKDOWN_REGEX.test(trimmed)

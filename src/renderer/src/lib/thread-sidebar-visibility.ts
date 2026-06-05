@@ -21,7 +21,8 @@ export function shouldInspectThreadForSidebarVisibility(
 }
 
 export function shouldHideThreadFromSidebarByBlocks(blocks: ChatBlock[]): boolean {
-  return blocks.length === 0
+  return blocks.length === 0 ||
+    blocks.some((block) => block.kind === 'user' && block.managedBy === 'claw')
 }
 
 export async function filterThreadsForSidebar(

@@ -1,67 +1,64 @@
 import type { ReactElement } from 'react'
-import { Bot, Code2, PencilLine } from 'lucide-react'
+import { Code2, PencilLine } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 type Props = {
-  activeView: 'chat' | 'write' | 'claw'
+  activeView: 'chat' | 'write' | 'claw' | 'schedule'
   onCodeOpen: () => void
   onWriteOpen: () => void
-  onClawOpen: () => void
 }
 
 export function WorkspaceModeTabs({
   activeView,
   onCodeOpen,
-  onWriteOpen,
-  onClawOpen
+  onWriteOpen
 }: Props): ReactElement {
   const { t } = useTranslation('common')
 
   const tabClass = (active: boolean): string =>
-    `inline-flex min-w-0 items-center justify-center gap-1.5 rounded-[9px] px-2.5 text-[13px] font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-accent/35 ${
+    `group inline-flex min-h-[32px] flex-1 min-w-0 items-center justify-center gap-2 rounded-[8px] px-2.5 py-1.5 text-left text-[13px] outline-none transition focus-visible:ring-2 focus-visible:ring-black/10 dark:focus-visible:ring-white/20 ${
       active
-        ? 'bg-white text-ds-ink shadow-[0_2px_8px_rgba(15,23,42,0.10)] ring-1 ring-ds-border-muted dark:bg-white/[0.13] dark:text-white dark:ring-white/10'
-        : 'text-ds-faint hover:bg-white/45 hover:text-ds-muted dark:hover:bg-white/[0.07]'
+        ? 'bg-[var(--ds-sidebar-field-focus)] font-medium text-[#182230] shadow-[0_1px_3px_rgba(15,23,42,0.07),inset_0_0_0_1px_var(--ds-sidebar-row-ring),inset_0_1px_0_rgba(255,255,255,0.78)] dark:bg-white/[0.09] dark:text-white dark:shadow-[0_1px_5px_rgba(0,0,0,0.24),inset_0_0_0_1px_rgba(255,255,255,0.1)]'
+        : 'font-normal text-[#5c6675] hover:bg-[color-mix(in_srgb,var(--ds-sidebar-field-focus)_56%,transparent)] hover:text-[#1f2733] dark:text-white/58 dark:hover:bg-white/[0.055] dark:hover:text-white/88'
+    }`
+
+  const iconClass = (active: boolean): string =>
+    `flex h-[21px] w-[21px] shrink-0 items-center justify-center rounded-[7px] transition ${
+      active
+        ? 'bg-[var(--ds-accent-soft)] text-[var(--ds-accent)] shadow-[inset_0_0_0_1px_rgba(0,136,255,0.12)] dark:bg-[rgba(51,156,255,0.2)] dark:text-[#78bdff] dark:shadow-[inset_0_0_0_1px_rgba(51,156,255,0.16)]'
+        : 'text-[#6f7a89] group-hover:bg-white/55 group-hover:text-[#344055] dark:text-white/48 dark:group-hover:bg-white/[0.06] dark:group-hover:text-white/78'
     }`
 
   return (
     <div
       role="tablist"
-      aria-label={`${t('code')} / ${t('write')} / ${t('claw')}`}
-      className="mb-4 rounded-[12px] border border-ds-border-muted/45 bg-ds-subtle/72 p-0.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.52)] backdrop-blur dark:bg-white/[0.045] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
+      aria-label={`${t('code')} / ${t('write')}`}
+      className="mb-2 flex flex-row gap-1 rounded-[8px] border border-[var(--ds-sidebar-row-ring)] bg-[color-mix(in_srgb,var(--ds-sidebar-field-bg)_84%,transparent)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.62)] dark:bg-white/[0.035] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
     >
-      <div className="grid h-[34px] grid-cols-3 gap-0.5">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeView === 'chat'}
-          onClick={onCodeOpen}
-          className={tabClass(activeView === 'chat')}
-        >
-          <Code2 className="h-3.5 w-3.5 shrink-0" strokeWidth={1.9} />
-          <span className="truncate">{t('code')}</span>
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeView === 'write'}
-          onClick={onWriteOpen}
-          className={tabClass(activeView === 'write')}
-        >
-          <PencilLine className="h-3.5 w-3.5 shrink-0" strokeWidth={1.9} />
-          <span className="truncate">{t('write')}</span>
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeView === 'claw'}
-          onClick={onClawOpen}
-          className={tabClass(activeView === 'claw')}
-        >
-          <Bot className="h-3.5 w-3.5 shrink-0" strokeWidth={1.9} />
-          <span className="truncate">{t('claw')}</span>
-        </button>
-      </div>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={activeView === 'chat'}
+        onClick={onCodeOpen}
+        className={tabClass(activeView === 'chat')}
+      >
+        <span className={iconClass(activeView === 'chat')}>
+          <Code2 className="h-3.5 w-3.5" strokeWidth={1.9} />
+        </span>
+        <span className="truncate">{t('code')}</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={activeView === 'write'}
+        onClick={onWriteOpen}
+        className={tabClass(activeView === 'write')}
+      >
+        <span className={iconClass(activeView === 'write')}>
+          <PencilLine className="h-3.5 w-3.5" strokeWidth={1.9} />
+        </span>
+        <span className="truncate">{t('write')}</span>
+      </button>
     </div>
   )
 }

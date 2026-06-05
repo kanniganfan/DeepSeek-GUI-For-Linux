@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   defaultClawSettings,
+  defaultKunRuntimeSettings,
+  defaultModelProviderSettings,
+  defaultScheduleSettings,
   defaultWriteSettings,
   type AppSettingsV1
 } from '../../shared/app-settings'
@@ -24,18 +27,11 @@ function createSettings(patch: Partial<AppSettingsV1['write']['inlineCompletion'
     locale: 'en',
     theme: 'system',
     uiFontScale: 'small',
-    agentProvider: 'codewhale',
+    provider: defaultModelProviderSettings(),
     agents: {
-      codewhale: {
-        binaryPath: '',
-        port: 7878,
-        autoStart: true,
-        apiKey: 'sk-test',
-        baseUrl: 'https://api.deepseek.com/beta',
-        runtimeToken: '',
-        extraCorsOrigins: [],
-        approvalPolicy: 'auto',
-        sandboxMode: 'workspace-write'
+      kun: {
+        ...defaultKunRuntimeSettings(),
+        apiKey: 'sk-test'
       }
     },
     workspaceRoot: '/tmp/workspace',
@@ -53,6 +49,7 @@ function createSettings(patch: Partial<AppSettingsV1['write']['inlineCompletion'
         ...patch
       }
     },
+    schedule: defaultScheduleSettings(),
     guiUpdate: {
       channel: 'stable'
     },
@@ -182,7 +179,7 @@ describe('requestWriteInlineCompletion', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     const settings = createSettings()
-    settings.agents.codewhale.apiKey = ''
+    settings.agents.kun.apiKey = ''
 
     const result = await requestWriteInlineCompletion(settings, createRequest())
 
@@ -223,6 +220,70 @@ describe('requestWriteInlineCompletion', () => {
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(JSON.parse(String(init.body))).toMatchObject({
       model: 'deepseek-v4-pro'
+    })
+  })
+
+  it('falls back to the General baseUrl and Kun model when write keeps defaults', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ choices: [{ text: ' fallback text' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const settings = createSettings()
+    settings.provider.baseUrl = 'https://general.example/v1'
+    settings.agents.kun.model = 'deepseek-chat'
+    settings.write.inlineCompletion.baseUrl = 'https://api.deepseek.com/beta'
+    settings.write.inlineCompletion.model = 'deepseek-v4-flash'
+
+    const result = await requestWriteInlineCompletion(settings, {
+      ...createRequest(),
+      model: ''
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      model: 'deepseek-chat'
+    })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toContain('https://general.example')
+    expect(url).toContain('/completions')
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      model: 'deepseek-chat'
+    })
+  })
+
+  it('uses an explicit flash override when write disables model inheritance', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ choices: [{ text: ' explicit flash' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const settings = createSettings({
+      inheritModel: false,
+      model: 'deepseek-v4-flash'
+    })
+    settings.provider.baseUrl = 'https://general.example/v1'
+    settings.agents.kun.model = 'deepseek-chat'
+
+    const result = await requestWriteInlineCompletion(settings, {
+      ...createRequest(),
+      model: ''
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      model: 'deepseek-v4-flash'
+    })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toContain('https://general.example')
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      model: 'deepseek-v4-flash'
     })
   })
 
@@ -556,6 +617,107 @@ describe('parseWriteInlineAction', () => {
     expect(parseWriteInlineAction('<<<PREFIX\nThis is\n>>>\n<<<SUFFIX\n a test.\n>>>')).toEqual({
       kind: 'short',
       text: ''
+    })
+  })
+
+  it('parses JSON action payloads', () => {
+    expect(parseWriteInlineAction(JSON.stringify({ kind: 'long', text: 'Continue the paragraph.' }))).toEqual({
+      kind: 'long',
+      text: 'Continue the paragraph.'
+    })
+    expect(parseWriteInlineAction(JSON.stringify({ action: 'edit', replacement: 'Rewrite locally.' }), {
+      editTarget: {
+        from: 3,
+        to: 11,
+        original: 'Old text',
+        scopeKind: 'paragraph'
+      }
+    })).toEqual({
+      kind: 'edit',
+      replacement: 'Rewrite locally.',
+      from: 3,
+      to: 11,
+      original: 'Old text',
+      scopeKind: 'paragraph'
+    })
+  })
+
+  it('parses XML-style action wrappers', () => {
+    expect(parseWriteInlineAction('<short>next words</short>')).toEqual({
+      kind: 'short',
+      text: 'next words'
+    })
+    expect(parseWriteInlineAction('<long>Two sentences.\nMaybe three.</long>')).toEqual({
+      kind: 'long',
+      text: 'Two sentences.\nMaybe three.'
+    })
+    expect(parseWriteInlineAction('<edit>Replace this scope</edit>', {
+      editTarget: {
+        from: 12,
+        to: 20,
+        original: 'old value',
+        scopeKind: 'selection'
+      }
+    })).toEqual({
+      kind: 'edit',
+      replacement: 'Replace this scope',
+      from: 12,
+      to: 20,
+      original: 'old value',
+      scopeKind: 'selection'
+    })
+  })
+
+  it('parses labeled plain-text fallbacks', () => {
+    expect(parseWriteInlineAction('completion: next sentence')).toEqual({
+      kind: 'short',
+      text: 'next sentence'
+    })
+    expect(parseWriteInlineAction('long: A fuller continuation.')).toEqual({
+      kind: 'long',
+      text: 'A fuller continuation.'
+    })
+    expect(parseWriteInlineAction('edit: Rewrite this block', {
+      editTarget: {
+        from: 1,
+        to: 4,
+        original: 'old',
+        scopeKind: 'paragraph'
+      }
+    })).toEqual({
+      kind: 'edit',
+      replacement: 'Rewrite this block',
+      from: 1,
+      to: 4,
+      original: 'old',
+      scopeKind: 'paragraph'
+    })
+  })
+
+  it('falls back to the requested mode for unstructured plain text', () => {
+    expect(parseWriteInlineAction('Raw continuation text')).toEqual({
+      kind: 'short',
+      text: 'Raw continuation text'
+    })
+    expect(parseWriteInlineAction('Raw long continuation', { fallbackKind: 'long' })).toEqual({
+      kind: 'long',
+      text: 'Raw long continuation'
+    })
+    expect(parseWriteInlineAction('Raw edit replacement', {
+      fallbackKind: 'edit',
+      editTarget: {
+        from: 8,
+        to: 15,
+        original: 'old text',
+        scopeKind: 'selection'
+      }
+    })).toEqual({
+      kind: 'edit',
+      replacement: 'Raw edit replacement',
+      from: 8,
+      to: 15,
+      original: 'old text',
+      scopeKind: 'selection'
     })
   })
 })

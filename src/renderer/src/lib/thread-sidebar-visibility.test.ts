@@ -21,11 +21,12 @@ function thread(overrides: Partial<NormalizedThread> & Pick<NormalizedThread, 'i
   }
 }
 
-function userBlock(text = 'hello'): ChatBlock {
+function userBlock(text = 'hello', managedBy?: 'claw'): ChatBlock {
   return {
     kind: 'user',
     id: 'u-1',
-    text
+    text,
+    ...(managedBy ? { managedBy } : {})
   }
 }
 
@@ -56,6 +57,10 @@ describe('thread-sidebar-visibility', () => {
     expect(shouldHideThreadFromSidebarByBlocks([userBlock()])).toBe(false)
   })
 
+  it('hides fallback entries whose raw prompt came from Claw', () => {
+    expect(shouldHideThreadFromSidebarByBlocks([userBlock('现在时间是23:50', 'claw')])).toBe(true)
+  })
+
   it('filters internal placeholder and empty fallback threads while keeping real threads', async () => {
     const threads = [
       thread({ id: 'thr_internal01', title: '__codex_parent_title__' }),
@@ -83,6 +88,16 @@ describe('thread-sidebar-visibility', () => {
     })
 
     expect(visible).toEqual([fallbackThread])
+  })
+
+  it('filters fallback titled CodeWhale Claw sessions after inspecting detail', async () => {
+    const fallbackThread = thread({ id: 'thr_20be8f66', title: 'thr_20be' })
+
+    const visible = await filterThreadsForSidebar([fallbackThread], {
+      getThreadDetail: async () => ({ blocks: [userBlock('现在时间是23:50', 'claw')] })
+    })
+
+    expect(visible).toEqual([])
   })
 
   it('hides fallback titled threads when detail loading fails', async () => {

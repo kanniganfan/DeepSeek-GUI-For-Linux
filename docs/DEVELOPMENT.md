@@ -6,7 +6,7 @@ This document defines how developers should work in this repository, especially 
 
 ## Development Baseline
 
-- `develop` is the current default branch for active collaboration and daily integration
+- `develop` is the active collaboration and daily integration branch
 - `master` is the stable release branch, updated by maintainers from `develop`
 - Routine feature and fix work should start from the latest `develop`
 - Short-lived feature branches are encouraged for non-trivial changes

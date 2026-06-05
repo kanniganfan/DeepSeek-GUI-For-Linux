@@ -10,10 +10,12 @@ import {
   Plus,
   RefreshCw,
   Settings,
+  Smartphone,
   Trash2
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { WorkspaceEntry } from '@shared/workspace-file'
+import { formatWorkspacePickerError } from '../../lib/format-workspace-picker-error'
 import { useChatStore, type SettingsRouteSection } from '../../store/chat-store'
 import {
   useWriteWorkspaceStore,
@@ -22,15 +24,25 @@ import {
   writeJoinPath,
   writeRelativeToWorkspace
 } from '../../write/write-workspace-store'
+import { ConnectPhoneSidebarPanel } from '../chat/ConnectPhoneView'
 import { WorkspaceModeTabs } from '../chat/WorkspaceModeTabs'
+import {
+  SidebarCommandRow,
+  SidebarFrame,
+  SidebarIconButton,
+  SidebarSectionHeader,
+  SidebarTreeRow
+} from '../sidebar/SidebarPrimitives'
 import { WriteFileTree } from './WriteFileTree'
 
 type Props = {
-  activeView: 'chat' | 'write' | 'claw'
+  activeView: 'chat' | 'write' | 'claw' | 'schedule'
+  connectPhoneSidebarOpen: boolean
   onCodeOpen: () => void
   onWriteOpen: () => void
-  onClawOpen: () => void
   onOpenSettings: (section?: SettingsRouteSection) => void
+  onToggleConnectPhone: () => void
+  onToggleSidebar: () => void
 }
 
 type EntryDialog =
@@ -43,15 +55,19 @@ type Translate = (key: string, opts?: Record<string, unknown>) => string
 
 export function WriteSidebar({
   activeView,
+  connectPhoneSidebarOpen,
   onCodeOpen,
   onWriteOpen,
-  onClawOpen,
-  onOpenSettings
+  onOpenSettings,
+  onToggleConnectPhone,
+  onToggleSidebar
 }: Props): ReactElement {
   const { t } = useTranslation('common')
+  const clawChannels = useChatStore((s) => s.clawChannels)
+  const addClawChannel = useChatStore((s) => s.addClawChannel)
+  const deleteClawChannel = useChatStore((s) => s.deleteClawChannel)
   const ensureWriteThreadForWorkspace = useChatStore((s) => s.ensureWriteThreadForWorkspace)
   const runtimeConnection = useChatStore((s) => s.runtimeConnection)
-  const [appVersion, setAppVersion] = useState('')
   const [entryDialog, setEntryDialog] = useState<EntryDialog | null>(null)
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Record<string, boolean>>({})
   const {
@@ -75,21 +91,9 @@ export function WriteSidebar({
     createDirectory,
     renameEntry,
     deleteEntry,
-    refreshWorkspace
+    refreshWorkspace,
+    setFileError
   } = useWriteWorkspaceStore()
-
-  useEffect(() => {
-    let cancelled = false
-    if (typeof window.dsGui?.getAppVersion !== 'function') return
-    void window.dsGui.getAppVersion().then((version) => {
-      if (!cancelled) setAppVersion(version)
-    }).catch(() => {
-      if (!cancelled) setAppVersion('')
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   useEffect(() => {
     void loadWriteSettings()
@@ -184,11 +188,18 @@ export function WriteSidebar({
   }
 
   const pickWriteWorkspace = async (): Promise<void> => {
-    if (typeof window.dsGui?.pickWorkspaceDirectory !== 'function') return
-    const picked = await window.dsGui.pickWorkspaceDirectory(workspaceRoot || defaultWorkspaceRoot || undefined)
-    if (!picked.canceled && picked.path) {
-      await addWriteWorkspace(picked.path)
-      if (runtimeConnection === 'ready') void ensureWriteThreadForWorkspace(picked.path)
+    try {
+      setFileError(null)
+      if (typeof window.dsGui?.pickWorkspaceDirectory !== 'function') {
+        throw new Error('workspace:pick-directory unavailable')
+      }
+      const picked = await window.dsGui.pickWorkspaceDirectory(workspaceRoot || defaultWorkspaceRoot || undefined)
+      if (!picked.canceled && picked.path) {
+        await addWriteWorkspace(picked.path)
+        if (runtimeConnection === 'ready') void ensureWriteThreadForWorkspace(picked.path)
+      }
+    } catch (error) {
+      setFileError(formatWorkspacePickerError(error))
     }
   }
 
@@ -217,55 +228,73 @@ export function WriteSidebar({
 
   return (
     <>
-    <aside className="ds-drag ds-sidebar-shell ds-frosted relative flex h-full w-full shrink-0 flex-col px-3 pb-3">
-      <div className="shrink-0 px-1 pb-2 pt-3">
-        <div aria-hidden className="ds-titlebar-safe-block" />
-        <div className="flex min-h-8 items-center justify-center px-1 pt-1">
-          <div className="truncate text-center text-[17px] font-medium tracking-[-0.025em] text-ds-ink">
-            {t('appName')}
-          </div>
+    <SidebarFrame
+      title={t('appName')}
+      onCollapse={onToggleSidebar}
+      footer={
+        <div className="space-y-1">
+          <SidebarCommandRow
+            icon={<Smartphone className="h-4 w-4" strokeWidth={1.75} />}
+            label={t('claw')}
+            onClick={onToggleConnectPhone}
+            active={connectPhoneSidebarOpen}
+            variant="footer"
+          />
+          <SidebarCommandRow
+            icon={<Settings className="h-4 w-4" strokeWidth={1.75} />}
+            label={t('settings')}
+            onClick={() => onOpenSettings('write')}
+            variant="footer"
+          />
         </div>
-        <div className="mx-1 mt-4 border-t border-ds-border-muted/20" />
-      </div>
-
-      <div className="ds-no-drag flex flex-col px-1">
+      }
+    >
+      <div className="ds-no-drag flex flex-col px-0.5">
         <WorkspaceModeTabs
           activeView={activeView}
           onCodeOpen={onCodeOpen}
           onWriteOpen={onWriteOpen}
-          onClawOpen={onClawOpen}
         />
-        <WriteSidebarLink
+        <SidebarCommandRow
           icon={<FilePlus2 className="h-4 w-4" strokeWidth={1.9} />}
           label={t('writeCreateFile')}
           onClick={() => void openCreateFileDialog()}
-          variant="flat-accent"
+          variant="accent"
         />
-        <WriteSidebarLink
+        <SidebarCommandRow
           icon={<FolderOpen className="h-4 w-4" strokeWidth={1.75} />}
           label={t('writeAddWorkspace')}
           onClick={() => void pickWriteWorkspace()}
         />
       </div>
 
-      <div className="ds-no-drag mx-1 my-3" />
+      <div className="ds-no-drag mx-1.5 my-3" />
 
+      {connectPhoneSidebarOpen ? (
+        <ConnectPhoneSidebarPanel
+          channels={clawChannels}
+          onAddProvider={async (provider, agentProfile, platformCredential, options) => {
+            await addClawChannel(provider, agentProfile, platformCredential, options)
+            onToggleConnectPhone()
+          }}
+          onDisconnect={(channelId) => deleteClawChannel(channelId)}
+          onOpenSettings={() => onOpenSettings('claw')}
+        />
+      ) : (
       <div className="ds-no-drag flex min-h-0 flex-1 flex-col">
-        <div className="flex items-center justify-between px-2 pb-1 pt-0.5">
-          <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-ds-faint">
-            {t('writeSpaces')}
-          </span>
-          <button
-            type="button"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => void pickWriteWorkspace()}
-            className="ds-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md text-ds-faint transition hover:bg-ds-hover/70 hover:text-ds-ink"
-            title={t('writeAddWorkspace')}
-            aria-label={t('writeAddWorkspace')}
-          >
-            <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-          </button>
-        </div>
+        <SidebarSectionHeader
+          label={t('writeSpaces')}
+          actions={
+            <SidebarIconButton
+              onClick={() => void pickWriteWorkspace()}
+              title={t('writeAddWorkspace')}
+              ariaLabel={t('writeAddWorkspace')}
+              stopPropagation
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+            </SidebarIconButton>
+          }
+        />
 
         {settingsError ? (
           <div className="mx-2 mt-1 rounded-lg border border-red-200/70 bg-red-50/80 px-2.5 py-2 text-[12px] leading-5 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200">
@@ -273,7 +302,7 @@ export function WriteSidebar({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-0.5 pb-1">
+        <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
           {workspaceRoots.length === 0 ? (
             <button
               type="button"
@@ -290,104 +319,79 @@ export function WriteSidebar({
           {workspaceRoots.map((workspacePath) => {
             const active = workspacePath === workspaceRoot
             const collapsed = active ? collapsedWorkspaces[workspacePath] === true : true
+            const removable = workspaceRoots.length > 1 && workspacePath !== defaultWorkspaceRoot
             return (
               <div key={workspacePath} className="mb-1">
-                <div
-                  className={`group relative flex w-full items-center gap-0.5 overflow-hidden rounded-[10px] text-[14px] font-medium transition ${
-                    active
-                      ? 'bg-black/8 text-ds-ink dark:bg-white/[0.055]'
-                      : 'text-ds-ink hover:bg-ds-hover/45'
-                  }`}
+                <SidebarTreeRow
+                  active={active}
                   title={workspacePath}
+                  onClick={() => void toggleWorkspaceGroup(workspacePath)}
+                  className="min-h-[36px]"
+                  buttonClassName="items-center gap-2 px-2.5 py-2"
+                  actions={
+                    active || removable ? (
+                      <>
+                        {active ? (
+                          <>
+                            <SidebarIconButton
+                              onClick={() => void openCreateFileDialog(root)}
+                              title={t('writeCreateFile')}
+                              ariaLabel={t('writeCreateFile')}
+                              tone="accent"
+                              stopPropagation
+                            >
+                              <FilePlus2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            </SidebarIconButton>
+                            <SidebarIconButton
+                              onClick={() => void openCreateDirectoryDialog(root)}
+                              title={t('writeCreateFolder')}
+                              ariaLabel={t('writeCreateFolder')}
+                              stopPropagation
+                            >
+                              <FolderPlus className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            </SidebarIconButton>
+                            <SidebarIconButton
+                              onClick={() => void refreshWorkspace(workspaceRoot)}
+                              title={t('writeRefreshWorkspace')}
+                              ariaLabel={t('writeRefreshWorkspace')}
+                              stopPropagation
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            </SidebarIconButton>
+                          </>
+                        ) : null}
+
+                        {removable ? (
+                          <SidebarIconButton
+                            onClick={() => void removeWorkspaceFromList(workspacePath)}
+                            title={t('writeRemoveWorkspace')}
+                            ariaLabel={t('writeRemoveWorkspace')}
+                            tone="danger"
+                            stopPropagation
+                          >
+                            <Trash2 className="h-3.5 w-3.5" strokeWidth={1.9} />
+                          </SidebarIconButton>
+                        ) : null}
+                      </>
+                    ) : undefined
+                  }
                 >
-                  <span
-                    aria-hidden
-                    className={`absolute bottom-1 left-0 top-1 w-[2px] rounded-full transition ${
-                      active ? 'bg-accent opacity-100' : 'bg-transparent opacity-0'
-                    }`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void toggleWorkspaceGroup(workspacePath)}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 pl-3 text-left"
-                  >
-                    {collapsed ? (
-                      <ChevronRight className="h-3 w-3 shrink-0 text-ds-faint" strokeWidth={2} />
-                    ) : (
-                      <ChevronDown className="h-3 w-3 shrink-0 text-ds-faint" strokeWidth={2} />
-                    )}
-                    {collapsed ? (
-                      <Folder className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.75} />
-                    ) : (
-                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.75} />
-                    )}
-                    <span className="min-w-0 flex-1 truncate">{writeBasenameFromPath(workspacePath)}</span>
-                  </button>
-
-                  {active ? (
-                    <>
-                      <button
-                        type="button"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          void openCreateFileDialog(root)
-                        }}
-                        className="ds-no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ds-faint opacity-55 transition hover:bg-accent/10 hover:text-accent hover:opacity-100 group-hover:opacity-100"
-                        title={t('writeCreateFile')}
-                        aria-label={t('writeCreateFile')}
-                      >
-                        <FilePlus2 className="h-3.5 w-3.5" strokeWidth={1.75} />
-                      </button>
-                      <button
-                        type="button"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          void openCreateDirectoryDialog(root)
-                        }}
-                        className="ds-no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ds-faint opacity-55 transition hover:bg-ds-hover/80 hover:text-ds-ink hover:opacity-100 group-hover:opacity-100"
-                        title={t('writeCreateFolder')}
-                        aria-label={t('writeCreateFolder')}
-                      >
-                        <FolderPlus className="h-3.5 w-3.5" strokeWidth={1.75} />
-                      </button>
-                      <button
-                        type="button"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          void refreshWorkspace(workspaceRoot)
-                        }}
-                        className="ds-no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ds-faint opacity-55 transition hover:bg-ds-hover/80 hover:text-ds-ink hover:opacity-100 group-hover:opacity-100"
-                        title={t('writeRefreshWorkspace')}
-                        aria-label={t('writeRefreshWorkspace')}
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.75} />
-                      </button>
-                    </>
-                  ) : null}
-
-                  {workspaceRoots.length > 1 && workspacePath !== defaultWorkspaceRoot ? (
-                    <button
-                      type="button"
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        void removeWorkspaceFromList(workspacePath)
-                      }}
-                      className="ds-no-drag mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ds-faint opacity-45 transition hover:bg-red-500/10 hover:text-red-600 hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 dark:hover:text-red-300"
-                      title={t('writeRemoveWorkspace')}
-                      aria-label={t('writeRemoveWorkspace')}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" strokeWidth={1.9} />
-                    </button>
-                  ) : null}
-                </div>
+                  {collapsed ? (
+                    <ChevronRight className="h-3 w-3 shrink-0 text-ds-faint" strokeWidth={2} />
+                  ) : (
+                    <ChevronDown className="h-3 w-3 shrink-0 text-ds-faint" strokeWidth={2} />
+                  )}
+                  {collapsed ? (
+                    <Folder className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.75} />
+                  ) : (
+                    <FolderOpen className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.75} />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">{writeBasenameFromPath(workspacePath)}</span>
+                </SidebarTreeRow>
 
                 {active && !collapsed ? (
-                  <div className="mt-0.5 pl-2">
-                    <div className="px-2 pb-1 text-[11.5px] text-ds-faint">
+                  <div className="mt-1 pl-3">
+                    <div className="px-2.5 pb-1 text-[11.5px] text-ds-faint">
                       <span className="block truncate" title={workspacePath}>
                         {workspacePath === defaultWorkspaceRoot ? t('writeDefaultSpace') : workspacePath}
                       </span>
@@ -417,21 +421,8 @@ export function WriteSidebar({
           })}
         </div>
       </div>
-
-      <div className="ds-no-drag mt-2 border-t border-ds-border-muted/20 px-1 pt-3">
-        <button
-          type="button"
-          onClick={() => onOpenSettings('write')}
-          className="flex min-h-[38px] w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-[14px] font-medium text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink"
-        >
-          <span className="inline-flex items-center gap-3">
-            <Settings className="h-4 w-4" strokeWidth={1.75} />
-            {t('settings')}
-          </span>
-          {appVersion ? <span className="text-[12px] text-ds-faint">v{appVersion}</span> : null}
-        </button>
-      </div>
-    </aside>
+      )}
+    </SidebarFrame>
     {entryDialog ? (
       <WriteEntryDialog
         dialog={entryDialog}
@@ -531,41 +522,5 @@ function WriteEntryDialog({
         </div>
       </form>
     </div>
-  )
-}
-
-type WriteSidebarActionProps = {
-  icon: ReactElement
-  label: string
-  onClick: () => void
-  variant?: 'flat' | 'flat-accent'
-}
-
-function WriteSidebarLink({
-  icon,
-  label,
-  onClick,
-  variant = 'flat'
-}: WriteSidebarActionProps): ReactElement {
-  const isAccent = variant === 'flat-accent'
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-[14px] font-medium transition ${
-        isAccent
-          ? 'border border-ds-border-muted/30 bg-white/[0.02] text-ds-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] hover:bg-white/[0.035] dark:border-white/10 dark:bg-white/[0.02] dark:hover:bg-white/[0.04]'
-          : 'text-ds-muted hover:bg-ds-hover/45 hover:text-ds-ink'
-      }`}
-    >
-      <span
-        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] ${
-          isAccent ? 'text-accent' : 'text-ds-muted'
-        }`}
-      >
-        {icon}
-      </span>
-      <span className="flex-1 truncate text-left">{label}</span>
-    </button>
   )
 }

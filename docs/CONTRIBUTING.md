@@ -27,7 +27,7 @@ Contributions are welcome for:
 
 The expected branch flow is:
 
-- `develop`: current default branch for active collaboration and daily integration
+- `develop`: active collaboration and daily integration branch
 - `master`: stable release branch, updated by maintainers from `develop`
 - feature branches: optional short-lived branches created from `develop`
 
@@ -180,7 +180,7 @@ When reporting issues, please include:
 
 - Operating system and version
 - DeepSeek GUI version (from Settings or the About dialog)
-- Bundled `codewhale` version (`codewhale --version` in the same directory)
+- Bundled `kun` version (`kun --version` in the same directory, if available)
 - Steps to reproduce the issue
 - Expected vs actual behavior
 - Relevant error messages, logs, or screenshots

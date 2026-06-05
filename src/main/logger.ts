@@ -2,6 +2,7 @@ import { appendFile, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export type LogLevel = 'error' | 'warn' | 'info'
+export type ManagedLogFilePrefix = 'deepseek-gui' | 'kun'
 
 type LoggerConfig = {
   /** Directory where log files are stored. */
@@ -13,14 +14,21 @@ type LoggerConfig = {
 }
 
 let cfg: LoggerConfig = { dir: '', enabled: true, retentionDays: 2 }
+const MANAGED_LOG_FILE_PREFIXES: ManagedLogFilePrefix[] = ['deepseek-gui', 'kun']
 
 export function configureLogger(config: Partial<LoggerConfig>): void {
   cfg = { ...cfg, ...config }
 }
 
-function logFileName(timestamp: Date): string {
+function logFileName(prefix: ManagedLogFilePrefix, timestamp: Date): string {
   const pad = (n: number): string => String(n).padStart(2, '0')
-  return `deepseek-gui-${timestamp.getFullYear()}-${pad(timestamp.getMonth() + 1)}-${pad(timestamp.getDate())}.log`
+  return `${prefix}-${timestamp.getFullYear()}-${pad(timestamp.getMonth() + 1)}-${pad(timestamp.getDate())}.log`
+}
+
+function isManagedLogFile(entry: string): boolean {
+  return MANAGED_LOG_FILE_PREFIXES.some(
+    (prefix) => entry.startsWith(`${prefix}-`) && entry.endsWith('.log')
+  )
 }
 
 /**
@@ -32,7 +40,7 @@ async function pruneOldLogs(): Promise<void> {
     const entries = await readdir(cfg.dir)
     const cutoff = Date.now() - cfg.retentionDays * 24 * 60 * 60 * 1000
     for (const entry of entries) {
-      if (!entry.startsWith('deepseek-gui-') || !entry.endsWith('.log')) continue
+      if (!isManagedLogFile(entry)) continue
       try {
         const info = await stat(join(cfg.dir, entry))
         if (info.mtimeMs < cutoff) {
@@ -47,20 +55,28 @@ async function pruneOldLogs(): Promise<void> {
   }
 }
 
-async function writeLogLine(level: LogLevel, category: string, message: string): Promise<void> {
+export async function appendManagedLogLine(
+  prefix: ManagedLogFilePrefix,
+  line: string
+): Promise<void> {
   if (!cfg.enabled || !cfg.dir) return
 
-  const stamp = new Date().toISOString()
-  const line = `[${stamp}] [${level.toUpperCase()}] [${category}] ${message}\n`
+  const text = line.endsWith('\n') ? line : `${line}\n`
 
   try {
     await mkdir(cfg.dir, { recursive: true })
-    await appendFile(join(cfg.dir, logFileName(new Date())), line, 'utf8')
+    await appendFile(join(cfg.dir, logFileName(prefix, new Date())), text, 'utf8')
     // prune after write — cheap since most writes succeed pruning
     await pruneOldLogs()
   } catch {
     /* never crash the app because of logging */
   }
+}
+
+async function writeLogLine(level: LogLevel, category: string, message: string): Promise<void> {
+  const stamp = new Date().toISOString()
+  const line = `[${stamp}] [${level.toUpperCase()}] [${category}] ${message}\n`
+  await appendManagedLogLine('deepseek-gui', line)
 }
 
 export function logError(category: string, message: string, detail?: unknown): void {

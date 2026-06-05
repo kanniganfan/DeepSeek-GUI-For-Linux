@@ -5,7 +5,8 @@ import type { AppSettingsV1 } from '../shared/app-settings'
 
 const CLAW_SCHEDULE_MCP_MARKER_START = '# DeepSeek GUI plugin:mcp:claw-schedule START'
 const CLAW_SCHEDULE_MCP_MARKER_END = '# DeepSeek GUI plugin:mcp:claw-schedule END'
-const CLAW_SCHEDULE_MCP_SERVER_NAME = 'claw_schedule'
+export const GUI_SCHEDULE_MCP_SERVER_NAME = 'gui_schedule'
+const LEGACY_CLAW_SCHEDULE_MCP_SERVER_NAME = 'claw_schedule'
 
 type JsonRecord = Record<string, unknown>
 
@@ -20,12 +21,16 @@ type ClawScheduleMcpConfigPaths = {
   mcpJsonPath?: string
 }
 
-export function resolveDeepseekConfigPath(): string {
-  return join(homedir(), '.deepseek', 'config.toml')
+export function resolveKunConfigPath(): string {
+  return join(homedir(), '.kun', 'config.toml')
 }
 
-function resolveDeepseekMcpJsonPath(): string {
-  return join(homedir(), '.deepseek', 'mcp.json')
+export function resolveDeepseekConfigPath(): string {
+  return resolveKunConfigPath()
+}
+
+export function resolveKunMcpJsonPath(): string {
+  return join(homedir(), '.kun', 'mcp.json')
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -44,8 +49,8 @@ export function buildClawScheduleMcpArgs(
   if (!launch.isPackaged) {
     args.push(launch.appPath)
   }
-  args.push('--claw-schedule-mcp-server', '--base-url', `http://127.0.0.1:${settings.claw.im.port}`)
-  const secret = settings.claw.im.secret.trim()
+  args.push('--gui-schedule-mcp-server', '--base-url', `http://127.0.0.1:${settings.schedule.internal.port}`)
+  const secret = settings.schedule.internal.secret.trim()
   if (secret) {
     args.push('--secret', secret)
   }
@@ -79,6 +84,7 @@ export function buildSyncedClawScheduleMcpJson(
 ): JsonRecord {
   const base = isRecord(existing) ? existing : {}
   const servers = isRecord(base.servers) ? base.servers : {}
+  const { [LEGACY_CLAW_SCHEDULE_MCP_SERVER_NAME]: _legacyScheduleServer, ...userServers } = servers
   const timeouts = isRecord(base.timeouts)
     ? base.timeouts
     : {
@@ -91,8 +97,8 @@ export function buildSyncedClawScheduleMcpJson(
     ...base,
     timeouts,
     servers: {
-      ...servers,
-      [CLAW_SCHEDULE_MCP_SERVER_NAME]: buildClawScheduleMcpServerConfig(settings, launch)
+      ...userServers,
+      [GUI_SCHEDULE_MCP_SERVER_NAME]: buildClawScheduleMcpServerConfig(settings, launch)
     }
   }
 }
@@ -158,7 +164,7 @@ async function readJsonFile(path: string): Promise<unknown | null> {
     return JSON.parse(raw) as unknown
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`Failed to parse DeepSeek MCP config at ${path}: ${message}`, { cause: error })
+    throw new Error(`Failed to parse Kun MCP config at ${path}: ${message}`, { cause: error })
   }
 }
 
@@ -178,8 +184,8 @@ async function cleanupLegacyTomlConfig(path: string): Promise<void> {
 
 export function clawScheduleMcpSettingsChanged(prev: AppSettingsV1, next: AppSettingsV1): boolean {
   return (
-    prev.claw.im.port !== next.claw.im.port ||
-    prev.claw.im.secret.trim() !== next.claw.im.secret.trim()
+    prev.schedule.internal.port !== next.schedule.internal.port ||
+    prev.schedule.internal.secret.trim() !== next.schedule.internal.secret.trim()
   )
 }
 
@@ -188,8 +194,8 @@ export async function syncClawScheduleMcpConfig(
   launch: ClawScheduleMcpLaunchConfig,
   paths: ClawScheduleMcpConfigPaths = {}
 ): Promise<void> {
-  const configTomlPath = paths.configTomlPath ?? resolveDeepseekConfigPath()
-  const mcpJsonPath = paths.mcpJsonPath ?? resolveDeepseekMcpJsonPath()
+  const configTomlPath = paths.configTomlPath ?? resolveKunConfigPath()
+  const mcpJsonPath = paths.mcpJsonPath ?? resolveKunMcpJsonPath()
 
   await cleanupLegacyTomlConfig(configTomlPath)
 

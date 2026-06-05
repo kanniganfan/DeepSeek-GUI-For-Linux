@@ -3,6 +3,8 @@ import {
   clawImInstallPollPayloadSchema,
   isSafeOpenExternalUrl,
   runtimeRequestPayloadSchema,
+  scheduleTaskFromTextPayloadSchema,
+  settingsPatchSchema,
   shellOpenExternalUrlSchema,
   sseStartPayloadSchema,
   workspaceDirectoryCreatePayloadSchema,
@@ -22,6 +24,223 @@ describe('app-ipc-schemas', () => {
     })
 
     expect(payload.path).toBe('/v1/threads?limit=1')
+  })
+
+  it('accepts the Kun runtime info endpoint', () => {
+    const payload = runtimeRequestPayloadSchema.parse({
+      path: '/v1/runtime/info',
+      method: 'GET'
+    })
+
+    expect(payload.path).toBe('/v1/runtime/info')
+  })
+
+  it('accepts the Kun runtime tool diagnostics endpoint', () => {
+    const payload = runtimeRequestPayloadSchema.parse({
+      path: '/v1/runtime/tools',
+      method: 'GET'
+    })
+
+    expect(payload.path).toBe('/v1/runtime/tools')
+  })
+
+  it('accepts Kun attachment and memory endpoints', () => {
+    expect(runtimeRequestPayloadSchema.parse({
+      path: '/v1/attachments',
+      method: 'POST',
+      body: '{}'
+    }).path).toBe('/v1/attachments')
+    expect(runtimeRequestPayloadSchema.parse({
+      path: '/v1/attachments/att_1/content?thread_id=thr_1',
+      method: 'GET'
+    }).path).toBe('/v1/attachments/att_1/content?thread_id=thr_1')
+    expect(runtimeRequestPayloadSchema.parse({
+      path: '/v1/memory',
+      method: 'POST',
+      body: '{}'
+    }).path).toBe('/v1/memory')
+    expect(runtimeRequestPayloadSchema.parse({
+      path: '/v1/memory/mem_1',
+      method: 'PATCH',
+      body: '{}'
+    }).path).toBe('/v1/memory/mem_1')
+  })
+
+  it('accepts Kun thread goal endpoints', () => {
+    expect(runtimeRequestPayloadSchema.parse({
+      path: '/v1/threads/thr_1/goal',
+      method: 'GET'
+    }).path).toBe('/v1/threads/thr_1/goal')
+    expect(runtimeRequestPayloadSchema.parse({
+      path: '/v1/threads/thr_1/goal',
+      method: 'POST',
+      body: '{}'
+    }).path).toBe('/v1/threads/thr_1/goal')
+    expect(runtimeRequestPayloadSchema.parse({
+      path: '/v1/threads/thr_1/goal',
+      method: 'DELETE'
+    }).path).toBe('/v1/threads/thr_1/goal')
+  })
+
+  it('accepts the Kun thread review endpoint', () => {
+    expect(runtimeRequestPayloadSchema.parse({
+      path: '/v1/threads/thr_1/review',
+      method: 'POST',
+      body: '{"target":{"kind":"uncommittedChanges"}}'
+    }).path).toBe('/v1/threads/thr_1/review')
+  })
+
+  it('rejects runtime request paths outside the modeled Kun API surface', () => {
+    expect(() =>
+      runtimeRequestPayloadSchema.parse({
+        path: '/v1/runtime/secrets',
+        method: 'GET'
+      })
+    ).toThrow(/runtime request path is not allowed/)
+  })
+
+  it('rejects runtime request methods that do not match the modeled endpoint', () => {
+    expect(() =>
+      runtimeRequestPayloadSchema.parse({
+        path: '/v1/usage',
+        method: 'POST'
+      })
+    ).toThrow(/runtime request path is not allowed/)
+  })
+
+  it('accepts a valid settings patch for kun and write settings', () => {
+    const payload = settingsPatchSchema.parse({
+      theme: 'dark',
+      agents: {
+        kun: {
+          port: 9000,
+          model: 'deepseek-chat',
+          tokenEconomy: {
+            enabled: true,
+            compressToolResults: false,
+            historyHygiene: {
+              maxToolResultTokens: 4000
+            }
+          }
+        }
+      },
+      write: {
+        inlineCompletion: {
+          model: 'deepseek-v4-pro',
+          maxTokens: 128
+        }
+      }
+    })
+
+    expect(payload.agents?.kun?.port).toBe(9000)
+    expect(payload.agents?.kun?.tokenEconomy?.enabled).toBe(true)
+    expect(payload.agents?.kun?.tokenEconomy?.historyHygiene?.maxToolResultTokens).toBe(4000)
+    expect(payload.write?.inlineCompletion?.model).toBe('deepseek-v4-pro')
+  })
+
+  it('accepts schedule settings patches and task payloads', () => {
+    const payload = settingsPatchSchema.parse({
+      schedule: {
+        enabled: true,
+        keepAwake: true,
+        defaultWorkspaceRoot: '/tmp/schedule',
+        model: 'deepseek-v4-flash',
+        mode: 'plan',
+        promptPrefix: 'Use the project checklist.',
+        skills: {
+          defaultNames: ['review'],
+          extraDirs: ['/tmp/skills']
+        },
+        internal: {
+          port: 9788,
+          secret: 'secret'
+        },
+        tasks: [{
+          id: 'task-1',
+          title: 'Daily review',
+          enabled: true,
+          prompt: 'Review the repo',
+          workspaceRoot: '/tmp/schedule',
+          model: 'auto',
+          reasoningEffort: 'high',
+          mode: 'agent',
+          schedule: {
+            kind: 'daily',
+            everyMinutes: 60,
+            timeOfDay: '09:30',
+            atTime: ''
+          },
+          lastStatus: 'idle'
+        }]
+      }
+    })
+
+    expect(payload.schedule?.internal?.port).toBe(9788)
+    expect(payload.schedule?.tasks?.[0]?.schedule?.kind).toBe('daily')
+    expect(payload.schedule?.tasks?.[0]?.reasoningEffort).toBe('high')
+
+    const fromText = scheduleTaskFromTextPayloadSchema.parse({
+      text: 'Remind me tomorrow morning to ship the review',
+      workspaceRoot: '/tmp/schedule',
+      modelHint: 'deepseek-v4-pro',
+      mode: 'agent'
+    })
+
+    expect(fromText.workspaceRoot).toBe('/tmp/schedule')
+    expect(fromText.modelHint).toBe('deepseek-v4-pro')
+  })
+
+  it('strips legacy settings keys before validating settings patches', () => {
+    const payload = settingsPatchSchema.parse({
+      locale: 'zh',
+      reasonix: { model: 'legacy-reasoner' },
+      quickChat: { enabled: true },
+      agents: {
+        kun: {
+          port: 9001
+        },
+        reasonix: {
+          model: 'legacy-reasoner'
+        },
+        quickChat: {
+          enabled: true
+        }
+      }
+    })
+
+    expect(payload.locale).toBe('zh')
+    expect(payload.agents?.kun?.port).toBe(9001)
+    expect('reasonix' in payload).toBe(false)
+    expect('quickChat' in payload).toBe(false)
+    expect('reasonix' in (payload.agents ?? {})).toBe(false)
+    expect('quickChat' in (payload.agents ?? {})).toBe(false)
+  })
+
+  it('rejects unknown settings patch fields', () => {
+    expect(() =>
+      settingsPatchSchema.parse({
+        agents: {
+          kun: {
+            mysteryFlag: true
+          }
+        }
+      })
+    ).toThrow(/Unrecognized key/)
+  })
+
+  it('rejects unknown schedule patch fields', () => {
+    expect(() =>
+      settingsPatchSchema.parse({
+        schedule: {
+          tasks: [{
+            id: 'task-1',
+            prompt: 'Run',
+            schedule: { kind: 'manual' },
+            legacyClawOnlyField: true
+          }]
+        }
+      })
+    ).toThrow(/Unrecognized key/)
   })
 
   it('allows only safe external URL protocols', () => {

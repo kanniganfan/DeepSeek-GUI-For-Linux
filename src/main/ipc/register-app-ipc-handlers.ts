@@ -5,19 +5,18 @@ import { dirname, join } from 'node:path'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { z } from 'zod'
 import {
-  getActiveAgentRuntimeSettings,
   type AppSettingsPatch,
   type AppSettingsV1,
   type ClawRunResult,
   type ClawTaskFromTextResult,
-  type ClawRuntimeStatus
+  type ClawRuntimeStatus,
+  type ScheduleRunResult,
+  type ScheduleRuntimeStatus,
+  type ScheduleTaskFromTextResult
 } from '../../shared/app-settings'
-import type { DeepseekUpdateInfo, DeepseekUpdateInstallResult } from '../../shared/deepseek-update'
 import type {
   ClawImInstallPollResult,
   ClawImInstallQrResult,
-  DeepseekRuntimeDiagnosticIssue,
-  DeepseekRuntimeDiagnosticsResult,
   RuntimeRequestResult,
   SystemNotificationResult,
   TurnCompleteNotificationPayload,
@@ -38,13 +37,11 @@ import {
   openEditorPathPayloadSchema,
   rootPathSchema,
   runtimeRequestPayloadSchema,
+  scheduleTaskFromTextPayloadSchema,
   shellOpenExternalUrlSchema,
   skillSaveFilePayloadSchema,
+  settingsPatchSchema,
   streamIdSchema,
-  terminalCreateOptionsSchema,
-  terminalInputPayloadSchema,
-  terminalLifecyclePayloadSchema,
-  terminalResizePayloadSchema,
   workspaceDirectoryCreatePayloadSchema,
   workspaceClipboardImageSavePayloadSchema,
   workspaceDirectoryTargetPayloadSchema,
@@ -60,9 +57,8 @@ import {
   workspaceRootSchema
 } from './app-ipc-schemas'
 import type { JsonSettingsStore } from '../settings-store'
-import { getRuntimeBaseUrl } from '../settings-store'
 import type { ClawRuntime } from '../claw-runtime'
-import { findListeningProcessOnPort } from '../deepseek-process'
+import type { ScheduleRuntime } from '../schedule-runtime'
 import { createAndSwitchGitBranch, getGitBranches, switchGitBranch } from '../services/git-service'
 import {
   createWorkspaceDirectory,
@@ -74,6 +70,7 @@ import {
   normalizeSkillFolderName,
   openEditorPath,
   openPathWithShell,
+  readClipboardImage,
   readWorkspaceImage,
   readWorkspaceFile,
   renameWorkspaceEntry,
@@ -81,7 +78,6 @@ import {
   saveWorkspaceClipboardImage,
   writeWorkspaceFile
 } from '../services/workspace-service'
-import type { createTerminalService } from '../services/terminal-service'
 import {
   clearWriteInlineCompletionDebugEntries,
   listWriteInlineCompletionDebugEntries,
@@ -90,7 +86,6 @@ import {
 import { copyWriteDocumentAsRichText, exportWriteDocument } from '../services/write-export-service'
 
 type GuiUpdaterModule = typeof import('../gui-updater')
-type TerminalService = ReturnType<typeof createTerminalService>
 
 type WorkspaceFileWatchRecord = {
   watcher: FSWatcher
@@ -111,15 +106,12 @@ type RegisterAppIpcHandlersOptions = {
   ) => Promise<RuntimeRequestResult>
   fetchUpstreamModels: () => Promise<UpstreamModelsResult>
   getClawRuntime: () => ClawRuntime | null
+  getScheduleRuntime: () => ScheduleRuntime | null
   startFeishuInstallQrcode: (isLark: boolean) => Promise<ClawImInstallQrResult>
   pollFeishuInstall: (deviceCode: string) => Promise<ClawImInstallPollResult>
-  prepareDeepseekBinary: () => Promise<
-    { ok: true; path: string } | { ok: false; message: string }
-  >
-  checkDeepseekUpdate: () => Promise<DeepseekUpdateInfo>
-  installDeepseekUpdate: () => Promise<DeepseekUpdateInstallResult>
-  resolveDeepseekConfigPath: () => string
-  terminalService: TerminalService
+  startWeixinInstallQrcode: (weixinBridgeUrl?: string) => Promise<ClawImInstallQrResult>
+  pollWeixinInstall: (deviceCode: string, weixinBridgeUrl?: string) => Promise<ClawImInstallPollResult>
+  resolveKunConfigPath: () => string
   showTurnCompleteNotification: (
     payload: TurnCompleteNotificationPayload
   ) => Promise<SystemNotificationResult>
@@ -137,175 +129,6 @@ function parseIpcPayload<T>(channel: string, schema: z.ZodType<T>, payload: unkn
   throw new Error(`Invalid payload for ${channel}: ${issue?.message ?? 'Bad request.'}`)
 }
 
-const settingsPatchSchema = z.object({}).passthrough()
-
-function trimDiagnosticBody(body: string, max = 2_000): string {
-  const text = body.trim()
-  if (text.length <= max) return text
-  return `${text.slice(0, max)}…`
-}
-
-function detectTomlConfigIssues(path: string, content: string): DeepseekRuntimeDiagnosticIssue[] {
-  const issues: DeepseekRuntimeDiagnosticIssue[] = []
-  const tables = new Map<string, number>()
-  const lines = content.split(/\r?\n/)
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const trimmed = lines[index].trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    const match = trimmed.match(/^\[([^\][\r\n]+)\]\s*(?:#.*)?$/)
-    if (!match) continue
-    const tableName = match[1].trim()
-    const firstLine = tables.get(tableName)
-    if (typeof firstLine === 'number') {
-      issues.push({
-        severity: 'error',
-        code: 'duplicate_toml_table',
-        title: 'Duplicate TOML table',
-        message: `[${tableName}] is declared again on line ${index + 1}. TOML tables can only be declared once; merge or remove the duplicate block.`,
-        path,
-        line: index + 1
-      })
-      continue
-    }
-    tables.set(tableName, index + 1)
-  }
-
-  return issues
-}
-
-async function probeRuntimeEndpoint(url: string): Promise<{
-  ok: boolean
-  status: number
-  body: string
-  message?: string
-}> {
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(2_000) })
-    return {
-      ok: res.ok,
-      status: res.status,
-      body: trimDiagnosticBody(await res.text())
-    }
-  } catch (error) {
-    return {
-      ok: false,
-      status: 0,
-      body: '',
-      message: error instanceof Error ? error.message : String(error)
-    }
-  }
-}
-
-async function diagnoseDeepseekRuntime(
-  options: Pick<RegisterAppIpcHandlersOptions, 'store' | 'prepareDeepseekBinary' | 'resolveDeepseekConfigPath'>
-): Promise<DeepseekRuntimeDiagnosticsResult> {
-  const settings = await options.store.load()
-  const configPath = options.resolveDeepseekConfigPath()
-  let configContent = ''
-  let configExists = true
-  try {
-    configContent = await readFile(configPath, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      configExists = false
-    } else {
-      throw error
-    }
-  }
-
-  const configIssues = detectTomlConfigIssues(configPath, configContent)
-  const binary = await options.prepareDeepseekBinary()
-  const runtime = getActiveAgentRuntimeSettings(settings)
-  const baseUrl = getRuntimeBaseUrl(runtime.port)
-  const portOwner = await findListeningProcessOnPort(runtime.port)
-  const health = await probeRuntimeEndpoint(`${baseUrl}/health`)
-  const threadApi = health.ok
-    ? await probeRuntimeEndpoint(`${baseUrl}/v1/threads?limit=1`)
-    : null
-  const issues: DeepseekRuntimeDiagnosticIssue[] = [...configIssues]
-
-  if (!runtime.apiKey.trim() && !process.env.DEEPSEEK_API_KEY?.trim()) {
-    issues.push({
-      severity: 'error',
-      code: 'missing_api_key',
-      title: 'Missing DeepSeek API key',
-      message: 'The GUI cannot auto-start the local runtime until a DeepSeek API key is configured.'
-    })
-  }
-
-  if (!runtime.autoStart) {
-    issues.push({
-      severity: 'warning',
-      code: 'auto_start_disabled',
-      title: 'Automatic runtime startup is disabled',
-      message: 'Enable auto-start or run `codewhale serve --http` manually before retrying the connection.'
-    })
-  }
-
-  if (!binary.ok) {
-    issues.push({
-      severity: 'error',
-      code: 'binary_unavailable',
-      title: 'CodeWhale CLI is unavailable',
-      message: binary.message
-    })
-  }
-
-  if (!portOwner) {
-    issues.push({
-      severity: runtime.autoStart ? 'info' : 'warning',
-      code: 'runtime_not_listening',
-      title: 'No runtime is listening on the configured port',
-      message: `Nothing is listening on ${baseUrl}. Retry will ask the GUI to start the managed runtime.`
-    })
-  } else if (!portOwner.command.toLowerCase().includes('deepseek')) {
-    issues.push({
-      severity: 'warning',
-      code: 'port_owned_by_other_process',
-      title: 'Configured port is owned by another process',
-      message: `Port ${runtime.port} is currently owned by PID ${portOwner.pid}: ${portOwner.command}`
-    })
-  }
-
-  if (health.ok && threadApi && !threadApi.ok) {
-    issues.push({
-      severity: threadApi.status === 401 ? 'error' : 'warning',
-      code: threadApi.status === 401 ? 'runtime_auth_required' : 'thread_api_unavailable',
-      title: threadApi.status === 401 ? 'Runtime token mismatch' : 'Thread API check failed',
-      message: threadApi.body || threadApi.message || `Thread API returned ${threadApi.status}.`
-    })
-  }
-
-  return {
-    checkedAt: new Date().toISOString(),
-    settings: {
-      port: runtime.port,
-      autoStart: runtime.autoStart,
-      binaryPath: runtime.binaryPath,
-      baseUrl: runtime.baseUrl,
-      approvalPolicy: runtime.approvalPolicy,
-      sandboxMode: runtime.sandboxMode,
-      hasApiKey: Boolean(runtime.apiKey.trim() || process.env.DEEPSEEK_API_KEY?.trim()),
-      hasRuntimeToken: Boolean(runtime.runtimeToken.trim())
-    },
-    binary,
-    config: {
-      path: configPath,
-      exists: configExists,
-      content: configContent,
-      issues: configIssues
-    },
-    runtime: {
-      baseUrl,
-      portOwner,
-      health,
-      threadApi
-    },
-    issues
-  }
-}
-
 export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): void {
   const {
     store,
@@ -314,13 +137,12 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     runtimeRequest,
     fetchUpstreamModels,
     getClawRuntime,
+    getScheduleRuntime,
     startFeishuInstallQrcode,
     pollFeishuInstall,
-    prepareDeepseekBinary,
-    checkDeepseekUpdate,
-    installDeepseekUpdate,
-    resolveDeepseekConfigPath,
-    terminalService,
+    startWeixinInstallQrcode,
+    pollWeixinInstall,
+    resolveKunConfigPath,
     showTurnCompleteNotification,
     getAppVersion,
     readGuiUpdateState,
@@ -436,10 +258,40 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
 
   ipcMain.handle('claw:task:run', async (_, taskId: unknown): Promise<ClawRunResult> => {
     const normalizedTaskId = parseIpcPayload('claw:task:run', streamIdSchema, taskId)
-    const clawRuntime = getClawRuntime()
-    if (!clawRuntime) return { ok: false, message: 'Claw runtime is not initialized.' }
-    return clawRuntime.runTask(normalizedTaskId)
+    const scheduleRuntime = getScheduleRuntime()
+    if (!scheduleRuntime) return { ok: false, message: 'Schedule runtime is not initialized.' }
+    return scheduleRuntime.runTask(normalizedTaskId)
   })
+
+  ipcMain.handle('schedule:status', async (): Promise<ScheduleRuntimeStatus> =>
+    getScheduleRuntime()?.status() ?? {
+      internalServerRunning: false,
+      internalUrl: '',
+      runningTaskIds: [],
+      powerSaveBlockerActive: false
+    }
+  )
+
+  ipcMain.handle('schedule:task:run', async (_, taskId: unknown): Promise<ScheduleRunResult> => {
+    const normalizedTaskId = parseIpcPayload('schedule:task:run', streamIdSchema, taskId)
+    const scheduleRuntime = getScheduleRuntime()
+    if (!scheduleRuntime) return { ok: false, message: 'Schedule runtime is not initialized.' }
+    return scheduleRuntime.runTask(normalizedTaskId)
+  })
+
+  ipcMain.handle(
+    'claw:channel:mirror',
+    async (_, payload: unknown) => {
+      const request = parseIpcPayload('claw:channel:mirror', clawMirrorPayloadSchema, payload)
+      const clawRuntime = getClawRuntime()
+      if (!clawRuntime) return { ok: false as const, message: 'Claw runtime is not initialized.' }
+      return clawRuntime.mirrorThreadMessageToIm(
+        request.threadId,
+        request.text,
+        request.direction
+      )
+    }
+  )
 
   ipcMain.handle(
     'claw:channel:mirror-to-feishu',
@@ -447,7 +299,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       const request = parseIpcPayload('claw:channel:mirror-to-feishu', clawMirrorPayloadSchema, payload)
       const clawRuntime = getClawRuntime()
       if (!clawRuntime) return { ok: false as const, message: 'Claw runtime is not initialized.' }
-      return clawRuntime.mirrorThreadMessageToFeishu(
+      return clawRuntime.mirrorThreadMessageToIm(
         request.threadId,
         request.text,
         request.direction
@@ -463,10 +315,32 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
         clawTaskFromTextPayloadSchema,
         payload
       )
-      const clawRuntime = getClawRuntime()
-      if (!clawRuntime) return { kind: 'error', message: 'Claw runtime is not initialized.' }
-      return clawRuntime.createScheduledTaskFromText(request.text, {
-        channelId: request.channelId,
+      const scheduleRuntime = getScheduleRuntime()
+      if (!scheduleRuntime) return { kind: 'error', message: 'Schedule runtime is not initialized.' }
+      const settings = await store.load()
+      const channel = request.channelId
+        ? settings.claw.channels.find((item) => item.id === request.channelId)
+        : undefined
+      return scheduleRuntime.createScheduledTaskFromText(request.text, {
+        workspaceRoot: channel?.workspaceRoot || settings.schedule.defaultWorkspaceRoot || settings.workspaceRoot,
+        modelHint: request.modelHint,
+        mode: request.mode
+      })
+    }
+  )
+
+  ipcMain.handle(
+    'schedule:task:create-from-text',
+    async (_, payload: unknown): Promise<ScheduleTaskFromTextResult> => {
+      const request = parseIpcPayload(
+        'schedule:task:create-from-text',
+        scheduleTaskFromTextPayloadSchema,
+        payload
+      )
+      const scheduleRuntime = getScheduleRuntime()
+      if (!scheduleRuntime) return { kind: 'error', message: 'Schedule runtime is not initialized.' }
+      return scheduleRuntime.createScheduledTaskFromText(request.text, {
+        workspaceRoot: request.workspaceRoot,
         modelHint: request.modelHint,
         mode: request.mode
       })
@@ -478,9 +352,12 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     async (_, payload: unknown) => {
       const request = parseIpcPayload(
         'claw:im-install:qrcode',
-        z.object({ provider: z.literal('feishu'), isLark: z.boolean().optional() }).strict(),
+        z.object({ provider: z.enum(['feishu', 'weixin']), isLark: z.boolean().optional() }).strict(),
         payload
       )
+      if (request.provider === 'weixin') {
+        return startWeixinInstallQrcode()
+      }
       return startFeishuInstallQrcode(request.isLark === true)
     }
   )
@@ -489,13 +366,12 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     'claw:im-install:poll',
     async (_, payload: unknown) => {
       const request = parseIpcPayload('claw:im-install:poll', clawImInstallPollPayloadSchema, payload)
+      if (request.provider === 'weixin') {
+        return pollWeixinInstall(request.deviceCode)
+      }
       return pollFeishuInstall(request.deviceCode)
     }
   )
-
-  ipcMain.handle('deepseek:prepare-binary', async () => prepareDeepseekBinary())
-  ipcMain.handle('deepseek:update-check', async () => checkDeepseekUpdate())
-  ipcMain.handle('deepseek:update-install', async () => installDeepseekUpdate())
 
   ipcMain.handle('workspace:pick-directory', async (_, defaultPath: unknown): Promise<WorkspacePickResult> => {
     const normalizedDefaultPath = parseIpcPayload(
@@ -560,7 +436,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
   })
 
   ipcMain.handle('deepseek:config:read', async () => {
-    const path = resolveDeepseekConfigPath()
+    const path = resolveKunConfigPath()
     try {
       const content = await readFile(path, 'utf8')
       return { path, content, exists: true as const }
@@ -578,7 +454,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       deepseekConfigContentSchema,
       content
     )
-    const path = resolveDeepseekConfigPath()
+    const path = resolveKunConfigPath()
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, validatedContent, 'utf8')
     return { ok: true as const, path }
@@ -586,7 +462,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
 
   ipcMain.handle('deepseek:config:open-dir', async () => {
     try {
-      const path = resolveDeepseekConfigPath()
+      const path = resolveKunConfigPath()
       const dirPath = dirname(path)
       await mkdir(dirPath, { recursive: true })
       return openPathWithShell(dirPath)
@@ -597,10 +473,6 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       }
     }
   })
-
-  ipcMain.handle('deepseek:diagnostics', async () =>
-    diagnoseDeepseekRuntime({ store, prepareDeepseekBinary, resolveDeepseekConfigPath })
-  )
 
   ipcMain.handle('git:branches', async (_, workspaceRoot: unknown) =>
     getGitBranches(parseIpcPayload('git:branches', workspaceRootSchema, workspaceRoot))
@@ -627,28 +499,6 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
   ipcMain.handle('editor:list', async () => listEditorsResult())
   ipcMain.handle('editor:open-path', async (_, payload: unknown) =>
     openEditorPath(parseIpcPayload('editor:open-path', openEditorPathPayloadSchema, payload))
-  )
-
-  ipcMain.handle('terminal:create', async (event, payload: unknown) =>
-    terminalService.createTerminalSession(
-      event.sender,
-      parseIpcPayload('terminal:create', terminalCreateOptionsSchema, payload)
-    )
-  )
-  ipcMain.handle('terminal:write', async (_, payload: unknown) =>
-    terminalService.writeTerminalSession(
-      parseIpcPayload('terminal:write', terminalInputPayloadSchema, payload)
-    )
-  )
-  ipcMain.handle('terminal:resize', async (_, payload: unknown) =>
-    terminalService.resizeTerminalSession(
-      parseIpcPayload('terminal:resize', terminalResizePayloadSchema, payload)
-    )
-  )
-  ipcMain.handle('terminal:close', async (_, payload: unknown) =>
-    terminalService.closeTerminalSession(
-      parseIpcPayload('terminal:close', terminalLifecyclePayloadSchema, payload)
-    )
   )
 
   ipcMain.handle('file:resolve-workspace', async (_, payload: unknown) =>
@@ -695,6 +545,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       )
     )
   )
+  ipcMain.handle('clipboard:read-image', async () => readClipboardImage())
   ipcMain.handle('file:rename-workspace-entry', async (_, payload: unknown) =>
     renameWorkspaceEntry(
       parseIpcPayload('file:rename-workspace-entry', workspaceEntryRenamePayloadSchema, payload)

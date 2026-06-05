@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   FolderOpen,
+  Info,
   Loader2,
   Plus,
   RefreshCw,
@@ -17,17 +18,26 @@ import {
   savePreferredSkillRootId,
   type SkillRootId
 } from '../lib/skill-root-preference'
+import { readBrowserStorageItem, writeBrowserStorageItem } from '../lib/browser-storage'
 import { normalizeWorkspaceRoot } from '../lib/workspace-path'
+import { getProvider } from '../agent/registry'
+import type {
+  CoreRuntimeInfoJson,
+  CoreRuntimeToolDiagnosticsJson
+} from '../agent/kun-contract'
 import { useChatStore } from '../store/chat-store'
+import { NoticeView, TabButton, type MarketplaceNotice } from './PluginMarketplaceParts'
+import {
+  buildMcpMarketplaceOverlay,
+  type McpMarketplaceOverlay,
+  type McpMarketplaceOverlayStatus
+} from './plugin-marketplace-runtime'
 
 type PluginKind = 'mcp' | 'skill'
 type PluginFilter = 'all' | 'recommended' | 'installed'
 type NoticeTone = 'success' | 'error' | 'info'
 
-type Notice = {
-  tone: NoticeTone
-  message: string
-}
+type Notice = MarketplaceNotice
 
 type MarketplaceItem = {
   id: string
@@ -35,9 +45,12 @@ type MarketplaceItem = {
   titleKey: string
   descriptionKey: string
   group: 'recommended'
-  mcpSnippet?: (workspaceRoot: string) => string
+  systemManaged?: boolean
+  mcpConfig?: (workspaceRoot: string) => JsonRecord
   skillInstructions?: string
 }
+
+type JsonRecord = Record<string, unknown>
 
 type SkillRootOption = {
   id: SkillRootId
@@ -47,14 +60,11 @@ type SkillRootOption = {
 }
 
 const INSTALLED_STORAGE_KEY = 'deepseekgui.installedPlugins'
-
-function markerFor(kind: PluginKind, id: string): string {
-  return `DeepSeek GUI plugin:${kind}:${id}`
-}
+const GUI_SCHEDULE_MCP_SERVER_ID = 'gui_schedule'
 
 function loadInstalledPlugins(): string[] {
   try {
-    const raw = window.localStorage.getItem(INSTALLED_STORAGE_KEY)
+    const raw = readBrowserStorageItem(INSTALLED_STORAGE_KEY)
     if (!raw) return []
     const parsed = JSON.parse(raw) as unknown
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
@@ -64,11 +74,7 @@ function loadInstalledPlugins(): string[] {
 }
 
 function saveInstalledPlugins(ids: string[]): void {
-  try {
-    window.localStorage.setItem(INSTALLED_STORAGE_KEY, JSON.stringify([...new Set(ids)]))
-  } catch {
-    /* localStorage may be unavailable */
-  }
+  writeBrowserStorageItem(INSTALLED_STORAGE_KEY, JSON.stringify([...new Set(ids)]))
 }
 
 function storageKey(kind: PluginKind, id: string): string {
@@ -83,28 +89,120 @@ function normalizePluginId(raw: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
-function tomlString(value: string): string {
-  return JSON.stringify(value)
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function tomlArray(values: string[]): string {
-  return `[${values.map(tomlString).join(', ')}]`
+function parseMcpJsonConfig(content: string): JsonRecord {
+  const trimmed = content.trim()
+  if (!trimmed) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`MCP config must be JSON: ${message}`)
+  }
+  if (!isJsonRecord(parsed)) {
+    throw new Error('MCP config must be a JSON object.')
+  }
+  return parsed
 }
 
-function buildMcpSnippet(
-  id: string,
-  title: string,
-  description: string,
+function buildStdioMcpServer(
   command: string,
-  args: string[]
-): string {
-  return [
-    `# ${markerFor('mcp', id)}`,
-    `# ${title} - ${description}`,
-    `[mcp_servers.${tomlString(id)}]`,
-    `command = ${tomlString(command)}`,
-    `args = ${tomlArray(args)}`
-  ].join('\n')
+  args: string[],
+  options: {
+    trustScope?: 'workspace' | 'user'
+    trustedWorkspaceRoots?: string[]
+    env?: JsonRecord
+  } = {}
+): JsonRecord {
+  const trustScope = options.trustScope ?? 'user'
+  return {
+    enabled: true,
+    transport: 'stdio',
+    command,
+    args,
+    env: options.env ?? {},
+    trustScope,
+    ...(trustScope === 'workspace'
+      ? {
+          trustedWorkspaceRoots: options.trustedWorkspaceRoots?.length
+            ? options.trustedWorkspaceRoots
+            : ['/path/to/workspace']
+        }
+      : {}),
+    timeoutMs: 30_000
+  }
+}
+
+export function buildMcpConfig(
+  id: string,
+  command: string,
+  args: string[],
+  options?: Parameters<typeof buildStdioMcpServer>[2]
+): JsonRecord {
+  return {
+    servers: {
+      [id]: buildStdioMcpServer(command, args, options)
+    }
+  }
+}
+
+function mcpServersFromConfig(config: JsonRecord): JsonRecord {
+  return isJsonRecord(config.servers) ? config.servers : {}
+}
+
+export function mcpConfigHasServer(content: string, id: string): boolean {
+  try {
+    return Object.prototype.hasOwnProperty.call(mcpServersFromConfig(parseMcpJsonConfig(content)), id)
+  } catch {
+    return false
+  }
+}
+
+export function customMcpConfigFragment(id: string, raw: string, fallback: JsonRecord): JsonRecord {
+  const trimmed = raw.trim()
+  if (!trimmed) return fallback
+  const parsed = parseMcpJsonConfig(trimmed)
+  if (isJsonRecord(parsed.servers)) return parsed
+  if (isJsonRecord(parsed.capabilities)) {
+    const mcp = isJsonRecord(parsed.capabilities.mcp) ? parsed.capabilities.mcp : undefined
+    if (isJsonRecord(mcp?.servers)) return { servers: mcp.servers }
+  }
+  if (parsed.command !== undefined || parsed.url !== undefined || parsed.transport !== undefined) {
+    return { servers: { [id]: parsed } }
+  }
+  throw new Error('MCP JSON config must include a servers object or a single server object.')
+}
+
+export function mergeMcpJsonConfig(content: string, fragment: JsonRecord): { alreadyExists: boolean; text: string } {
+  const current = parseMcpJsonConfig(content)
+  const currentServers = mcpServersFromConfig(current)
+  const fragmentServers = mcpServersFromConfig(fragment)
+  const fragmentServerIds = Object.keys(fragmentServers)
+  if (fragmentServerIds.length === 0) {
+    throw new Error('MCP JSON config must include at least one server.')
+  }
+  const alreadyExists = fragmentServerIds.some((id) =>
+    Object.prototype.hasOwnProperty.call(currentServers, id)
+  )
+  if (alreadyExists) {
+    return { alreadyExists: true, text: `${JSON.stringify(current, null, 2)}\n` }
+  }
+
+  const fragmentRest = { ...fragment }
+  delete fragmentRest.servers
+  const next = {
+    ...current,
+    ...fragmentRest,
+    servers: {
+      ...currentServers,
+      ...fragmentServers
+    }
+  }
+  return { alreadyExists: false, text: `${JSON.stringify(next, null, 2)}\n` }
 }
 
 function buildSkillContent(id: string, title: string, description: string, instructions: string): string {
@@ -127,18 +225,28 @@ function skillNameLooksValid(raw: string): boolean {
 
 const RECOMMENDED_ITEMS: MarketplaceItem[] = [
   {
+    id: GUI_SCHEDULE_MCP_SERVER_ID,
+    kind: 'mcp',
+    titleKey: 'pluginMcpGuiScheduleTitle',
+    descriptionKey: 'pluginMcpGuiScheduleDesc',
+    group: 'recommended',
+    systemManaged: true
+  },
+  {
     id: 'filesystem',
     kind: 'mcp',
     titleKey: 'pluginMcpFilesystemTitle',
     descriptionKey: 'pluginMcpFilesystemDesc',
     group: 'recommended',
-    mcpSnippet: (workspaceRoot) =>
-      buildMcpSnippet(
+    mcpConfig: (workspaceRoot) =>
+      buildMcpConfig(
         'filesystem',
-        'Filesystem',
-        'Read and write files in the selected workspace.',
         'npx',
-        ['-y', '@modelcontextprotocol/server-filesystem', workspaceRoot || '/path/to/project']
+        ['-y', '@modelcontextprotocol/server-filesystem', workspaceRoot || '/path/to/project'],
+        {
+          trustScope: 'workspace',
+          trustedWorkspaceRoots: [workspaceRoot || '/path/to/project']
+        }
       )
   },
   {
@@ -147,11 +255,9 @@ const RECOMMENDED_ITEMS: MarketplaceItem[] = [
     titleKey: 'pluginMcpPlaywrightTitle',
     descriptionKey: 'pluginMcpPlaywrightDesc',
     group: 'recommended',
-    mcpSnippet: () =>
-      buildMcpSnippet(
+    mcpConfig: () =>
+      buildMcpConfig(
         'playwright',
-        'Playwright',
-        'Automate and inspect real browsers.',
         'npx',
         ['-y', '@playwright/mcp@latest']
       )
@@ -162,17 +268,12 @@ const RECOMMENDED_ITEMS: MarketplaceItem[] = [
     titleKey: 'pluginMcpGithubTitle',
     descriptionKey: 'pluginMcpGithubDesc',
     group: 'recommended',
-    mcpSnippet: () =>
-      [
-        buildMcpSnippet(
-          'github',
-          'GitHub',
-          'Read repositories, issues, pull requests, and CI context.',
-          'npx',
-          ['-y', '@modelcontextprotocol/server-github']
-        ),
-        '# env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..." }'
-      ].join('\n')
+    mcpConfig: () =>
+      buildMcpConfig(
+        'github',
+        'npx',
+        ['-y', '@modelcontextprotocol/server-github']
+      )
   },
   {
     id: 'context7',
@@ -180,11 +281,9 @@ const RECOMMENDED_ITEMS: MarketplaceItem[] = [
     titleKey: 'pluginMcpContext7Title',
     descriptionKey: 'pluginMcpContext7Desc',
     group: 'recommended',
-    mcpSnippet: () =>
-      buildMcpSnippet(
+    mcpConfig: () =>
+      buildMcpConfig(
         'context7',
-        'Context7',
-        'Fetch current library documentation for coding tasks.',
         'npx',
         ['-y', '@upstash/context7-mcp@latest']
       )
@@ -243,9 +342,13 @@ export function PluginMarketplaceView(): ReactElement {
   const [customArgs, setCustomArgs] = useState('')
   const [customConfig, setCustomConfig] = useState('')
   const [customSkillBody, setCustomSkillBody] = useState('')
-  const [skillRootId, setSkillRootId] = useState<SkillRootId>(() => loadPreferredSkillRootId())
-  const [mcpConfigText, setMcpConfigText] = useState('')
-  const [mcpLoaded, setMcpLoaded] = useState(false)
+	  const [skillRootId, setSkillRootId] = useState<SkillRootId>(() => loadPreferredSkillRootId())
+	  const [mcpConfigText, setMcpConfigText] = useState('')
+	  const [mcpLoaded, setMcpLoaded] = useState(false)
+	  const [runtimeInfo, setRuntimeInfo] = useState<CoreRuntimeInfoJson | null>(null)
+	  const [toolDiagnostics, setToolDiagnostics] = useState<CoreRuntimeToolDiagnosticsJson | null>(null)
+	  const [runtimeOverlayLoading, setRuntimeOverlayLoading] = useState(false)
+	  const [runtimeOverlayError, setRuntimeOverlayError] = useState('')
 
   const skillRootOptions = useMemo<SkillRootOption[]>(() => {
     const hasWorkspace = !!workspaceRoot
@@ -271,7 +374,7 @@ export function PluginMarketplaceView(): ReactElement {
       {
         id: 'global-deepseek',
         label: t('pluginSkillRootGlobalDeepseek'),
-        path: '~/.deepseek/skills',
+        path: '~/.kun/skills',
         available: true
       }
     ]
@@ -301,12 +404,51 @@ export function PluginMarketplaceView(): ReactElement {
     return file.content
   }, [mcpConfigText])
 
-  useEffect(() => {
-    if (activeKind !== 'mcp' || mcpLoaded) return
-    void readMcpConfig().catch((e) => {
-      setNotice({ tone: 'error', message: e instanceof Error ? e.message : String(e) })
-    })
-  }, [activeKind, mcpLoaded, readMcpConfig])
+	  useEffect(() => {
+	    if (activeKind !== 'mcp' || mcpLoaded) return
+	    void readMcpConfig().catch((e) => {
+	      setNotice({ tone: 'error', message: e instanceof Error ? e.message : String(e) })
+	    })
+	  }, [activeKind, mcpLoaded, readMcpConfig])
+
+	  const refreshMcpRuntimeOverlay = useCallback(async (): Promise<void> => {
+	    if (typeof window.dsGui?.runtimeRequest !== 'function') {
+	      setRuntimeInfo(null)
+	      setToolDiagnostics(null)
+	      setRuntimeOverlayError(t('pluginMcpRuntimeUnavailable'))
+	      return
+	    }
+	    const provider = getProvider()
+	    if (!provider.getRuntimeInfo && !provider.getToolDiagnostics) {
+	      setRuntimeOverlayError(t('pluginMcpRuntimeUnavailable'))
+	      return
+	    }
+	    setRuntimeOverlayLoading(true)
+	    setRuntimeOverlayError('')
+	    try {
+	      const [runtimeResult, diagnosticsResult] = await Promise.allSettled([
+	        provider.getRuntimeInfo?.(),
+	        provider.getToolDiagnostics?.()
+	      ])
+	      if (runtimeResult.status === 'fulfilled' && runtimeResult.value) {
+	        setRuntimeInfo(runtimeResult.value)
+	      }
+	      if (diagnosticsResult.status === 'fulfilled' && diagnosticsResult.value) {
+	        setToolDiagnostics(diagnosticsResult.value)
+	      }
+	      const errors = [runtimeResult, diagnosticsResult]
+	        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+	        .map((result) => runtimeOverlayErrorMessage(result.reason, t('pluginMcpRuntimeUnavailable')))
+	      if (errors.length > 0) setRuntimeOverlayError(errors[0] ?? t('pluginActionFailed'))
+	    } finally {
+	      setRuntimeOverlayLoading(false)
+	    }
+	  }, [t])
+
+	  useEffect(() => {
+	    if (activeKind !== 'mcp') return
+	    void refreshMcpRuntimeOverlay()
+	  }, [activeKind, refreshMcpRuntimeOverlay])
 
   useEffect(() => {
     setNotice(null)
@@ -322,9 +464,11 @@ export function PluginMarketplaceView(): ReactElement {
   }
 
   const isInstalled = useCallback((item: Pick<MarketplaceItem, 'kind' | 'id'>): boolean => {
+    const catalogItem = RECOMMENDED_ITEMS.find((candidate) => candidate.kind === item.kind && candidate.id === item.id)
+    if (catalogItem?.systemManaged) return true
     const key = storageKey(item.kind, item.id)
     if (installed.includes(key)) return true
-    return item.kind === 'mcp' && mcpConfigText.includes(markerFor('mcp', item.id))
+    return item.kind === 'mcp' && mcpConfigHasServer(mcpConfigText, item.id)
   }, [installed, mcpConfigText])
 
   const visibleItems = useMemo(() => {
@@ -342,19 +486,28 @@ export function PluginMarketplaceView(): ReactElement {
       })
   }, [activeKind, filter, isInstalled, query, t])
 
-  const recommendedItems = visibleItems.filter((item) => !isInstalled(item))
-  const personalItems = visibleItems.filter(isInstalled)
+	  const builtInItems = visibleItems.filter((item) => item.systemManaged)
+	  const recommendedItems = visibleItems.filter((item) => !item.systemManaged && !isInstalled(item))
+	  const personalItems = visibleItems.filter((item) => !item.systemManaged && isInstalled(item))
+	  const mcpRuntimeOverlay = useMemo(
+	    () => buildMcpMarketplaceOverlay({
+        runtimeInfo,
+        toolDiagnostics,
+        managedServers: [{ id: GUI_SCHEDULE_MCP_SERVER_ID, toolCount: 4 }]
+      }),
+	    [runtimeInfo, toolDiagnostics]
+	  )
 
-  const appendMcpSnippet = async (id: string, snippet: string): Promise<void> => {
+  const appendMcpConfig = async (id: string, config: JsonRecord): Promise<void> => {
     const content = mcpLoaded ? mcpConfigText : await readMcpConfig()
-    if (content.includes(markerFor('mcp', id))) {
+    const merged = mergeMcpJsonConfig(content, config)
+    if (merged.alreadyExists) {
       markInstalled(storageKey('mcp', id))
       setNotice({ tone: 'info', message: t('pluginAlreadyAdded') })
       return
     }
-    const next = `${content.trimEnd()}${content.trim() ? '\n\n' : ''}${snippet.trim()}\n`
-    const result = await window.dsGui.setDeepseekConfigFile(next)
-    setMcpConfigText(next)
+    const result = await window.dsGui.setDeepseekConfigFile(merged.text)
+    setMcpConfigText(merged.text)
     setMcpLoaded(true)
     markInstalled(storageKey('mcp', id))
     setNotice({ tone: 'success', message: t('pluginMcpAdded', { path: result.path }) })
@@ -365,8 +518,8 @@ export function PluginMarketplaceView(): ReactElement {
     setNotice(null)
     try {
       if (item.kind === 'mcp') {
-        if (!item.mcpSnippet) return
-        await appendMcpSnippet(item.id, item.mcpSnippet(workspaceRoot))
+        if (!item.mcpConfig) return
+        await appendMcpConfig(item.id, item.mcpConfig(workspaceRoot))
         return
       }
 
@@ -407,17 +560,15 @@ export function PluginMarketplaceView(): ReactElement {
     setNotice(null)
     try {
       if (activeKind === 'mcp') {
-        const snippet = customConfig.trim() || buildMcpSnippet(
+        const fallback = buildMcpConfig(
           id,
-          customName.trim() || id,
-          description,
           customCommand.trim() || 'npx',
           customArgs
             .split('\n')
             .map((arg) => arg.trim())
             .filter(Boolean)
         )
-        await appendMcpSnippet(id, snippet.includes(markerFor('mcp', id)) ? snippet : `${`# ${markerFor('mcp', id)}`}\n${snippet}`)
+        await appendMcpConfig(id, customMcpConfigFragment(id, customConfig, fallback))
       } else {
         if (!selectedSkillRoot?.path) {
           setNotice({ tone: 'error', message: t('pluginSkillRootMissing') })
@@ -527,8 +678,8 @@ export function PluginMarketplaceView(): ReactElement {
           </label>
         </div>
 
-        {activeKind === 'skill' ? (
-          <div className="mt-4 flex flex-col gap-2 md:flex-row md:items-center">
+	        {activeKind === 'skill' ? (
+	          <div className="mt-4 flex flex-col gap-2 md:flex-row md:items-center">
             <select
               value={selectedSkillRoot?.id ?? ''}
               onChange={(event) => setSkillRootId(event.target.value as SkillRootId)}
@@ -548,10 +699,20 @@ export function PluginMarketplaceView(): ReactElement {
               <FolderOpen className="h-4 w-4" />
               {t('pluginOpenLocation')}
             </button>
-          </div>
-        ) : null}
+	          </div>
+	        ) : null}
 
-        {customOpen ? (
+	        {activeKind === 'mcp' ? (
+	          <McpRuntimeOverlayPanel
+	            overlay={mcpRuntimeOverlay}
+	            loading={runtimeOverlayLoading}
+	            error={runtimeOverlayError}
+	            onRefresh={() => void refreshMcpRuntimeOverlay()}
+	            t={t}
+	          />
+	        ) : null}
+
+	        {customOpen ? (
           <CustomPluginPanel
             activeKind={activeKind}
             customName={customName}
@@ -572,6 +733,18 @@ export function PluginMarketplaceView(): ReactElement {
         ) : null}
 
         {notice ? <NoticeView notice={notice} /> : null}
+
+        {activeKind === 'mcp' ? (
+          <PluginSection
+            title={t('pluginBuiltIn')}
+            emptyText={t('pluginNoResults')}
+            items={builtInItems}
+            busyId={busyId}
+            isInstalled={isInstalled}
+            onAdd={addItem}
+            t={t}
+          />
+        ) : null}
 
         <PluginSection
           title={t('pluginRecommended')}
@@ -602,35 +775,120 @@ export function PluginMarketplaceView(): ReactElement {
       </div>
     </div>
   )
+	}
+	
+function McpRuntimeOverlayPanel({
+  overlay,
+  loading,
+  error,
+  onRefresh,
+  t
+}: {
+  overlay: McpMarketplaceOverlay
+  loading: boolean
+  error: string
+  onRefresh: () => void
+  t: (key: string, values?: Record<string, unknown>) => string
+}): ReactElement {
+  const status = mcpRuntimeStatusLabel(overlay.status, t)
+  return (
+    <section className="mt-4 rounded-lg border border-ds-border bg-ds-card px-4 py-3 shadow-sm">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-ds-muted" strokeWidth={1.8} />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[13px] font-semibold text-ds-ink">{t('pluginMcpRuntimeOverlay')}</span>
+              <span className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${mcpRuntimeStatusTone(overlay.status)}`}>
+                {status}
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-ds-muted">
+              <span>{t('pluginMcpRuntimeServers', {
+                connected: overlay.connectedServers,
+                configured: overlay.configuredServers
+              })}</span>
+              <span>{t('pluginMcpRuntimeTools', { count: overlay.toolCount })}</span>
+              <span>{t('pluginMcpRuntimeSearch', {
+                mode: overlay.searchMode,
+                status: overlay.searchActive ? t('pluginMcpRuntimeSearchActive') : t('pluginMcpRuntimeSearchInactive'),
+                indexed: overlay.indexedToolCount,
+                advertised: overlay.advertisedToolCount
+              })}</span>
+              {overlay.driftCount > 0 ? <span>{t('pluginMcpRuntimeDrift', { count: overlay.driftCount })}</span> : null}
+            </div>
+            {overlay.serverIds.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {overlay.serverIds.map((id) => (
+                  <span
+                    key={id}
+                    className="rounded-md border border-ds-border-muted bg-ds-subtle px-2 py-0.5 font-mono text-[11px] text-ds-muted"
+                  >
+                    {id}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {error || overlay.lastError ? (
+              <div className="mt-2 truncate text-[12px] text-red-700 dark:text-red-300">
+                {error || t('pluginMcpRuntimeLastError', { message: overlay.lastError })}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-ds-border bg-ds-subtle px-3 text-[12px] font-semibold text-ds-ink transition hover:bg-ds-hover disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          {t('pluginMcpRuntimeRefresh')}
+        </button>
+      </div>
+    </section>
+  )
 }
 
-function TabButton({
-  active,
-  tone = 'default',
-  onClick,
-  children
-}: {
-  active: boolean
-  tone?: 'default' | 'skill'
-  onClick: () => void
-  children: string
-}): ReactElement {
-  const activeClass =
-    tone === 'skill'
-      ? 'bg-ds-skill-soft text-ds-skill shadow-sm'
-      : 'bg-ds-card text-ds-ink shadow-sm'
+function mcpRuntimeStatusLabel(
+  status: McpMarketplaceOverlayStatus,
+  t: (key: string) => string
+): string {
+  switch (status) {
+    case 'connected':
+      return t('pluginMcpRuntimeConnected')
+    case 'configured':
+      return t('pluginMcpRuntimeConfigured')
+    case 'drift':
+      return t('pluginMcpRuntimeDrifted')
+    case 'error':
+      return t('pluginMcpRuntimeError')
+    case 'disabled':
+      return t('pluginMcpRuntimeDisabled')
+    case 'offline':
+      return t('pluginMcpRuntimeOffline')
+  }
+}
 
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-lg px-4 py-2 text-[15px] font-semibold transition ${
-        active ? activeClass : 'text-ds-muted hover:text-ds-ink'
-      }`}
-    >
-      {children}
-    </button>
-  )
+function mcpRuntimeStatusTone(status: McpMarketplaceOverlayStatus): string {
+  switch (status) {
+    case 'connected':
+      return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200'
+    case 'configured':
+      return 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-200'
+    case 'drift':
+      return 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-200'
+    case 'error':
+      return 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-200'
+    case 'disabled':
+    case 'offline':
+      return 'bg-ds-subtle text-ds-muted'
+  }
+}
+
+function runtimeOverlayErrorMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return /runtimeRequest|dsGui|Cannot read properties/i.test(message) ? fallback : message
 }
 
 function PluginSection({
@@ -800,19 +1058,5 @@ function CustomPluginPanel({
         </button>
       </div>
     </section>
-  )
-}
-
-function NoticeView({ notice }: { notice: Notice }): ReactElement {
-  const className =
-    notice.tone === 'error'
-      ? 'border-red-300/80 bg-red-50 text-red-800 dark:border-red-800/70 dark:bg-red-950/25 dark:text-red-200'
-      : notice.tone === 'success'
-        ? 'border-emerald-300/80 bg-emerald-50 text-emerald-800 dark:border-emerald-800/70 dark:bg-emerald-950/25 dark:text-emerald-200'
-        : 'border-ds-border bg-ds-subtle text-ds-muted'
-  return (
-    <div className={`mt-4 rounded-xl border px-3 py-2 text-[13px] leading-5 ${className}`}>
-      {notice.message}
-    </div>
   )
 }

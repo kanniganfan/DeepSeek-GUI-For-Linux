@@ -14,7 +14,7 @@
 - 触发太积极：长补全打断正在输入的节奏。
 - 触发太保守：用户停住时只给一两个词，缺少启发价值。
 
-因此当前实现拆成 `short` 和 `long` 两个 mode，共享编辑器上下文和 FIM 接口，但使用不同触发条件、prompt、token 预算和质量过滤。
+因此当前自动触发的 ghost text 路径拆成 `short` 和 `long` 两个 mode，共享编辑器上下文和服务端请求链路，但使用不同触发条件、prompt、token 预算和质量过滤。同一套 IPC / service 还包含面向选区编辑的手动 `edit` mode，详见 `WRITE_INLINE_EDIT_RAG.zh-CN.md`。
 
 ## 总体架构
 
@@ -46,18 +46,18 @@ flowchart TD
 `WriteInlineCompletionMode` 定义在 `src/shared/write-inline-completion.ts`：
 
 ```ts
-export type WriteInlineCompletionMode = 'short' | 'long'
+export type WriteInlineCompletionMode = 'short' | 'long' | 'edit'
 ```
 
 补全请求会携带：
 
 ```ts
 {
-  mode?: 'short' | 'long'
+  mode?: 'short' | 'long' | 'edit'
 }
 ```
 
-未传 mode 时默认视为 `short`，保证旧调用路径兼容。
+未传 mode 时默认视为 `short`，保证旧调用路径兼容。本文重点说明两个自动 ghost text mode；`edit` 复用同一请求类型承载显式 inline replacement。
 
 ## 短补全
 
@@ -264,11 +264,11 @@ Return only insertable text...
 
 重点覆盖：
 
-- FIM 请求走 `/completions` 而不是 chat completions。
+- 自动 short/long ghost text 请求走 FIM `/completions`；显式 `mode: "edit"` 或可能返回 action 的请求走 chat completions。
 - 短补全默认 mode。
 - 长补全使用独立 prompt 和 token budget。
 - 设置默认值迁移。
-- IPC schema 接受 `mode: "long"`。
+- IPC schema 接受 `mode: "long"` 和 `mode: "edit"`；后者由 inline edit 测试和文档覆盖。
 
 ## 后续优化方向
 

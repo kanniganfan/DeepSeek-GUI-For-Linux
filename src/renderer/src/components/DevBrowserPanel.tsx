@@ -7,8 +7,6 @@ import {
   ExternalLink,
   Globe2,
   Loader2,
-  Maximize2,
-  MoreVertical,
   PanelRightClose,
   Plus,
   RefreshCw,
@@ -24,6 +22,11 @@ import {
   extractDetectedDevPreviewUrls,
   formatDevPreviewUrlLabel
 } from '../lib/dev-preview-detection'
+import {
+  readBrowserStorageItem,
+  removeBrowserStorageItem,
+  writeBrowserStorageItem
+} from '../lib/browser-storage'
 
 type DevWebviewTag = HTMLElement & {
   canGoBack(): boolean
@@ -53,9 +56,13 @@ const PREVIEW_AUTO_FOLLOW_STORAGE_KEY = 'deepseekgui.devPreview.autoFollow'
 
 function readStoredUrl(): string | null {
   try {
-    const raw = window.localStorage.getItem(PREVIEW_URL_STORAGE_KEY)
+    const raw = readBrowserStorageItem(PREVIEW_URL_STORAGE_KEY)
     const normalized = raw ? normalizeDevPreviewUrlInput(raw) : null
     if (!normalized) return null
+    if (normalized === DEFAULT_DEV_PREVIEW_URL) {
+      removeBrowserStorageItem(PREVIEW_URL_STORAGE_KEY)
+      return null
+    }
     const parsed = new URL(normalized)
     const pathname = decodeURIComponent(parsed.pathname).toLowerCase()
     if (/^\/(?:health|metrics|readyz?|livez?|v\d+)(?:\/|$)/.test(pathname)) return null
@@ -67,28 +74,16 @@ function readStoredUrl(): string | null {
 }
 
 function persistUrl(url: string): void {
-  try {
-    window.localStorage.setItem(PREVIEW_URL_STORAGE_KEY, url)
-  } catch {
-    /* ignore persistence failures */
-  }
+  writeBrowserStorageItem(PREVIEW_URL_STORAGE_KEY, url)
 }
 
 function readStoredAutoFollow(): boolean {
-  try {
-    const raw = window.localStorage.getItem(PREVIEW_AUTO_FOLLOW_STORAGE_KEY)
-    return raw == null ? true : raw === 'true'
-  } catch {
-    return true
-  }
+  const raw = readBrowserStorageItem(PREVIEW_AUTO_FOLLOW_STORAGE_KEY)
+  return raw == null ? true : raw === 'true'
 }
 
 function persistAutoFollow(value: boolean): void {
-  try {
-    window.localStorage.setItem(PREVIEW_AUTO_FOLLOW_STORAGE_KEY, String(value))
-  } catch {
-    /* ignore persistence failures */
-  }
+  writeBrowserStorageItem(PREVIEW_AUTO_FOLLOW_STORAGE_KEY, String(value))
 }
 
 function formatAddressInput(url: string): string {
@@ -103,6 +98,21 @@ function formatAddressInput(url: string): string {
 
 type LoadOptions = {
   keepAutoFollow?: boolean
+}
+
+export function resolveInitialDevBrowserUrl(input: {
+  normalizedPreferredUrl?: string | null
+  storedUrl?: string | null
+  latestDetectedUrl?: string | null
+}): string | null {
+  return input.normalizedPreferredUrl ?? input.storedUrl ?? input.latestDetectedUrl ?? null
+}
+
+export function canUseElectronWebviewEnvironment(input: {
+  openExternalAvailable: boolean
+  userAgent: string
+}): boolean {
+  return input.openExternalAvailable && /\bElectron\//.test(input.userAgent)
 }
 
 export function DevBrowserPanel({
@@ -121,15 +131,22 @@ export function DevBrowserPanel({
   const iframeLoadedUrlRef = useRef<string | null>(null)
   const detectedUrls = useMemo(() => extractDetectedDevPreviewUrls(blocks), [blocks])
   const latestDetectedUrl = detectedUrls[0] ?? null
-  const useElectronWebview = typeof window.dsGui?.openExternal === 'function'
+  const useElectronWebview = canUseElectronWebviewEnvironment({
+    openExternalAvailable: typeof window.dsGui?.openExternal === 'function',
+    userAgent: window.navigator.userAgent
+  })
   const normalizedPreferredUrl = useMemo(
     () => (preferredUrl ? normalizeDevPreviewUrlInput(preferredUrl) : null),
     [preferredUrl]
   )
-  const initialUrl = normalizedPreferredUrl ?? readStoredUrl() ?? latestDetectedUrl ?? DEFAULT_DEV_PREVIEW_URL
+  const initialUrl = resolveInitialDevBrowserUrl({
+    normalizedPreferredUrl,
+    storedUrl: readStoredUrl(),
+    latestDetectedUrl
+  })
   const preferredUrlRef = useRef<string | null>(normalizedPreferredUrl)
-  const [activeUrl, setActiveUrl] = useState(initialUrl)
-  const [draftUrl, setDraftUrl] = useState(() => formatAddressInput(initialUrl))
+  const [activeUrl, setActiveUrl] = useState<string | null>(initialUrl)
+  const [draftUrl, setDraftUrl] = useState(() => (initialUrl ? formatAddressInput(initialUrl) : ''))
   const [autoFollow, setAutoFollow] = useState(readStoredAutoFollow)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -139,6 +156,7 @@ export function DevBrowserPanel({
   const [iframeBackStack, setIframeBackStack] = useState<string[]>([])
   const [iframeForwardStack, setIframeForwardStack] = useState<string[]>([])
   const [iframeReloadNonce, setIframeReloadNonce] = useState(0)
+  const [previewInstanceNonce, setPreviewInstanceNonce] = useState(0)
   const canNavigateBack = useElectronWebview ? canGoBack : iframeBackStack.length > 0
   const canNavigateForward = useElectronWebview ? canGoForward : iframeForwardStack.length > 0
 
@@ -147,7 +165,7 @@ export function DevBrowserPanel({
   }, [autoFollow])
 
   useEffect(() => {
-    persistUrl(activeUrl)
+    if (activeUrl) persistUrl(activeUrl)
   }, [activeUrl])
 
   useEffect(() => {
@@ -172,7 +190,7 @@ export function DevBrowserPanel({
 
   useEffect(() => {
     const webview = webviewRef.current
-    if (!useElectronWebview || !webview) return
+    if (!useElectronWebview || !activeUrl || !webview) return
 
     const syncNavigationState = (): void => {
       try {
@@ -230,10 +248,10 @@ export function DevBrowserPanel({
       webview.removeEventListener('did-fail-load', handleFailLoad)
       webview.removeEventListener('page-title-updated', handleTitle)
     }
-  }, [t, useElectronWebview])
+  }, [activeUrl, previewInstanceNonce, t, useElectronWebview])
 
   useEffect(() => {
-    if (useElectronWebview) return
+    if (useElectronWebview || !activeUrl) return
     iframeLoadedUrlRef.current = null
     setLoading(true)
     setLoadError(null)
@@ -256,13 +274,17 @@ export function DevBrowserPanel({
     if (!options.keepAutoFollow) setAutoFollow(false)
     setLoadError(null)
     setPageTitle('')
-    setLoading(true)
-    if (!useElectronWebview && normalized !== activeUrl) {
+    setDraftUrl(formatAddressInput(normalized))
+    if (normalized === activeUrl) {
+      reload()
+      return
+    }
+    if (!useElectronWebview && activeUrl && normalized !== activeUrl) {
       setIframeBackStack((stack) => [...stack, activeUrl].slice(-30))
       setIframeForwardStack([])
     }
+    setLoading(true)
     setActiveUrl(normalized)
-    setDraftUrl(formatAddressInput(normalized))
   }
 
   const submitUrl = (event: FormEvent<HTMLFormElement>): void => {
@@ -271,6 +293,7 @@ export function DevBrowserPanel({
   }
 
   const reload = (): void => {
+    if (!activeUrl) return
     if (!useElectronWebview) {
       const normalized = normalizeDevPreviewUrlInput(activeUrl)
       if (!normalized) return
@@ -282,24 +305,48 @@ export function DevBrowserPanel({
     }
     setLoading(true)
     setLoadError(null)
+    const webview = webviewRef.current
+    if (!webview) {
+      setPreviewInstanceNonce((nonce) => nonce + 1)
+      return
+    }
     try {
-      webviewRef.current?.reloadIgnoringCache()
+      webview.reloadIgnoringCache()
     } catch {
-      loadUrl(activeUrl, { keepAutoFollow: true })
+      setPreviewInstanceNonce((nonce) => nonce + 1)
     }
   }
 
+  const resetPreview = (): void => {
+    setAutoFollow(false)
+    setLoadError(null)
+    setPageTitle('')
+    setCanGoBack(false)
+    setCanGoForward(false)
+    setIframeBackStack([])
+    setIframeForwardStack([])
+    iframeLoadedUrlRef.current = null
+    setIframeReloadNonce(0)
+    setPreviewInstanceNonce((nonce) => nonce + 1)
+    setDraftUrl('')
+    setLoading(false)
+    setActiveUrl(null)
+    removeBrowserStorageItem(PREVIEW_URL_STORAGE_KEY)
+  }
+
   const openExternal = (): void => {
+    if (!activeUrl) return
     const normalized = normalizeDevPreviewUrlInput(activeUrl)
     if (!normalized) return
     if (typeof window.dsGui?.openExternal === 'function') {
-      void window.dsGui.openExternal(normalized)
+      void window.dsGui.openExternal(normalized).catch(() => undefined)
       return
     }
     window.open(normalized, '_blank', 'noopener,noreferrer')
   }
 
   const goBack = (): void => {
+    if (!activeUrl) return
     if (!useElectronWebview) {
       const previousUrl = iframeBackStack.at(-1)
       if (!previousUrl) return
@@ -320,6 +367,7 @@ export function DevBrowserPanel({
   }
 
   const goForward = (): void => {
+    if (!activeUrl) return
     if (!useElectronWebview) {
       const nextUrl = iframeForwardStack[0]
       if (!nextUrl) return
@@ -339,12 +387,32 @@ export function DevBrowserPanel({
     }
   }
 
+  const primaryDetectedUrl = latestDetectedUrl ?? detectedUrls[0] ?? null
+  const tabLabel = activeUrl
+    ? pageTitle || formatDevPreviewUrlLabel(activeUrl)
+    : t('browserNewTab')
+
   return (
     <aside
       className={`ds-no-drag flex min-h-0 flex-col border-l border-ds-border-muted bg-white backdrop-blur-xl dark:bg-ds-canvas ${className ?? ''}`}
     >
       <div className="shrink-0 border-b border-ds-border-muted bg-white/92 dark:bg-ds-card">
-        <div className="flex h-12 min-w-0 items-center gap-2 px-3">
+        <div className="flex h-10 min-w-0 items-center gap-2 border-b border-ds-border-muted/70 bg-ds-surface-subtle/55 px-3 dark:bg-white/[0.035]">
+          <div className="flex h-8 min-w-0 max-w-[15rem] items-center gap-2 rounded-[8px] bg-white px-3 text-[12px] font-semibold text-ds-ink shadow-[0_1px_0_rgba(15,23,42,0.04)] dark:bg-white/9">
+            <Globe2 className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.75} />
+            <span className="truncate">{tabLabel}</span>
+          </div>
+          <button
+            type="button"
+            onClick={resetPreview}
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ds-faint transition hover:bg-white hover:text-ds-ink dark:hover:bg-white/10"
+            aria-label={t('browserNewTab')}
+            title={t('browserNewTab')}
+          >
+            <Plus className="h-3.5 w-3.5" strokeWidth={1.8} />
+          </button>
+        </div>
+        <form onSubmit={submitUrl} className="flex h-12 min-w-0 items-center gap-2 px-3">
           <button
             type="button"
             onClick={onCollapse}
@@ -354,88 +422,50 @@ export function DevBrowserPanel({
           >
             <PanelRightClose className="h-4 w-4" strokeWidth={1.85} />
           </button>
-          <div className="flex min-w-0 max-w-[240px] items-center gap-2 rounded-[12px] bg-ds-surface-subtle px-3 py-1.5 dark:bg-white/8">
-            <Globe2 className="h-4 w-4 shrink-0 text-ds-muted" strokeWidth={1.75} />
-            <span className="min-w-0 truncate text-[13px] font-medium text-ds-ink">
-              {pageTitle || t('browserTitle')}
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => loadUrl(DEFAULT_DEV_PREVIEW_URL)}
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
-            aria-label={t('browserNewTab')}
-            title={t('browserNewTab')}
-          >
-            <Plus className="h-4 w-4" strokeWidth={1.8} />
-          </button>
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={openExternal}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
-              aria-label={t('browserOpenExternal')}
-              title={t('browserOpenExternal')}
-            >
-              <Maximize2 className="h-3.5 w-3.5" strokeWidth={1.8} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setAutoFollow((value) => !value)}
-              className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition hover:bg-ds-hover ${
-                autoFollow ? 'text-sky-500 dark:text-sky-300' : 'text-ds-faint hover:text-ds-ink'
-              }`}
-              aria-label={t('browserAutoFollow')}
-              aria-pressed={autoFollow}
-              title={t('browserAutoFollow')}
-            >
-              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.75} />
-            </button>
-          </div>
-        </div>
 
-        <form onSubmit={submitUrl} className="flex h-12 min-w-0 items-center gap-2 px-3">
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1 rounded-full bg-ds-surface-subtle p-0.5 dark:bg-white/8">
             <button
               type="button"
               onClick={goBack}
               disabled={!canNavigateBack}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-default disabled:opacity-35"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-ds-faint transition hover:bg-white hover:text-ds-ink disabled:cursor-default disabled:opacity-35 dark:hover:bg-white/10"
               aria-label={t('browserBack')}
               title={t('browserBack')}
             >
-              <ArrowLeft className="h-4 w-4" strokeWidth={1.8} />
+              <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.8} />
             </button>
             <button
               type="button"
               onClick={goForward}
               disabled={!canNavigateForward}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-default disabled:opacity-35"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-ds-faint transition hover:bg-white hover:text-ds-ink disabled:cursor-default disabled:opacity-35 dark:hover:bg-white/10"
               aria-label={t('browserForward')}
               title={t('browserForward')}
             >
-              <ArrowRight className="h-4 w-4" strokeWidth={1.8} />
+              <ArrowRight className="h-3.5 w-3.5" strokeWidth={1.8} />
             </button>
             <button
               type="button"
               onClick={reload}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+              disabled={!activeUrl}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-ds-faint transition hover:bg-white hover:text-ds-ink disabled:cursor-default disabled:opacity-35 dark:hover:bg-white/10"
               aria-label={t('browserReload')}
               title={t('browserReload')}
             >
               {loading ? (
-                <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.8} />
+                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.8} />
               ) : (
-                <RefreshCw className="h-4 w-4" strokeWidth={1.8} />
+                <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.8} />
               )}
             </button>
           </div>
 
-          <div className="min-w-0 flex-1 px-3">
+          <div className="flex h-8 min-w-[7rem] flex-1 items-center gap-2 rounded-full border border-ds-border-muted bg-ds-surface-subtle px-3 text-ds-muted transition focus-within:border-ds-border-strong focus-within:bg-white dark:bg-white/7 dark:focus-within:bg-white/10">
+            <Globe2 className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
             <input
               value={draftUrl}
               onChange={(event) => setDraftUrl(event.target.value)}
-              className="h-8 w-full min-w-0 rounded-full bg-transparent px-3 text-center text-[14px] font-medium text-ds-ink outline-none transition focus:bg-ds-surface-subtle focus:text-left dark:focus:bg-white/8"
+              className="h-full w-full min-w-0 bg-transparent text-[13px] font-medium text-ds-ink outline-none"
               placeholder={t('browserAddressPlaceholder')}
               spellCheck={false}
             />
@@ -452,23 +482,43 @@ export function DevBrowserPanel({
             </button>
             <button
               type="button"
-              onClick={openExternal}
+              onClick={() => setAutoFollow((value) => !value)}
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition hover:bg-ds-hover ${
+                autoFollow ? 'text-sky-500 dark:text-sky-300' : 'text-ds-faint hover:text-ds-ink'
+              }`}
+              aria-label={t('browserAutoFollow')}
+              aria-pressed={autoFollow}
+              title={t('browserAutoFollow')}
+            >
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.75} />
+            </button>
+            <button
+              type="button"
+              onClick={resetPreview}
               className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+              aria-label={t('browserReset')}
+              title={t('browserReset')}
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={1.8} />
+            </button>
+            <button
+              type="button"
+              onClick={openExternal}
+              disabled={!activeUrl}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-default disabled:opacity-35"
               aria-label={t('browserOpenExternal')}
               title={t('browserOpenExternal')}
             >
               <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.8} />
             </button>
-            <button
-              type="button"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
-              aria-label={t('browserMore')}
-              title={t('browserMore')}
-            >
-              <MoreVertical className="h-4 w-4" strokeWidth={1.8} />
-            </button>
           </div>
         </form>
+
+        {pageTitle ? (
+          <div className="min-w-0 truncate px-3 pb-2 text-[11px] font-medium leading-4 text-ds-muted">
+            {pageTitle}
+          </div>
+        ) : null}
 
         {detectedUrls.length > 0 ? (
           <div className="flex min-w-0 gap-1.5 overflow-x-auto px-3 pb-2">
@@ -476,7 +526,7 @@ export function DevBrowserPanel({
               <button
                 key={url}
                 type="button"
-                onClick={() => loadUrl(url, { keepAutoFollow: true })}
+                onClick={() => loadUrl(url, { keepAutoFollow: url === latestDetectedUrl })}
                 className="shrink-0 rounded-full border border-ds-border-muted bg-ds-surface-subtle px-2.5 py-1 text-[10.5px] font-medium text-ds-muted transition hover:border-ds-border-strong hover:text-ds-ink dark:bg-white/6"
                 title={url}
               >
@@ -494,8 +544,32 @@ export function DevBrowserPanel({
       ) : null}
 
       <div className="relative min-h-0 flex-1 bg-white dark:bg-ds-canvas">
-        {useElectronWebview ? (
+        {!activeUrl ? (
+          <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+            <Globe2 className="h-16 w-16 text-zinc-400 dark:text-zinc-500" strokeWidth={1.45} />
+            <div className="mt-7 text-[14px] font-semibold text-ds-ink">
+              {t('browserEmptyTitle')}
+            </div>
+            <div className="mt-2 text-[12px] font-medium text-ds-faint">
+              {t('browserEmptySubtitle')}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (primaryDetectedUrl) {
+                  loadUrl(primaryDetectedUrl, { keepAutoFollow: primaryDetectedUrl === latestDetectedUrl })
+                  return
+                }
+                setAutoFollow(true)
+              }}
+              className="mt-6 inline-flex h-8 items-center justify-center rounded-full bg-ds-surface-subtle px-3 text-[12px] font-semibold text-ds-ink transition hover:bg-ds-hover dark:bg-white/8 dark:hover:bg-white/12"
+            >
+              {t('browserShowAll')}
+            </button>
+          </div>
+        ) : useElectronWebview ? (
           <webview
+            key={`webview:${previewInstanceNonce}`}
             ref={webviewRef}
             src={activeUrl}
             partition="persist:deepseek-dev-browser"
@@ -504,7 +578,7 @@ export function DevBrowserPanel({
           />
         ) : (
           <iframe
-            key={`${activeUrl}:${iframeReloadNonce}`}
+            key={`iframe:${previewInstanceNonce}:${activeUrl}:${iframeReloadNonce}`}
             src={activeUrl}
             title={pageTitle || t('browserTitle')}
             sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"

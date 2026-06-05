@@ -1,22 +1,53 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent as ReactClipboardEvent,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactElement
+} from 'react'
 import {
   Archive,
   BarChart3,
-  Bot,
-  ChevronDown,
-  Clock3,
   GitFork,
-  Gauge,
+  ImagePlus,
   ListTodo,
+  Loader2,
+  MessageCircleMore,
   Minimize2,
+  PauseCircle,
+  Pencil,
+  Plus,
+  PlayCircle,
   RotateCcw,
+  SearchCode,
   Send,
   Square,
+  Target,
+  Trash2,
   X
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import type { ModelProviderModelGroup } from '@shared/ds-gui-api'
+import type { AttachmentReference, ReviewTarget } from '../../agent/types'
 import { useChatStore } from '../../store/chat-store'
 import { normalizeWorkspaceRoot } from '../../lib/workspace-path'
+import {
+  COMPACT_COMMAND_ALIASES,
+  getGoalPanelDraftObjective,
+  getSlashQuery,
+  parseBtwCommand,
+  parseCompactCommand,
+  parseGoalCommand,
+  parseReviewCommand,
+  REVIEW_COMMAND_ALIASES,
+  type SlashCommand,
+  type SlashCommandId
+} from './floating-composer-commands'
+export { parseBtwCommand, parseCompactCommand, parseGoalCommand, parseReviewCommand } from './floating-composer-commands'
 import {
   formatCompactNumber,
   formatCost,
@@ -24,11 +55,15 @@ import {
   useThreadUsageState
 } from '../../hooks/use-thread-usage'
 import { GitBranchPicker } from './GitBranchPicker'
-
-type QueuedComposerMessage = {
-  id: string
-  text: string
-}
+import {
+  FloatingComposerModelPicker,
+  type ComposerReasoningEffort
+} from './FloatingComposerModelPicker'
+import {
+  FloatingComposerQueuedMessages,
+  type QueuedComposerMessage
+} from './FloatingComposerQueuedMessages'
+import { useComposerDraft } from './use-composer-draft'
 
 type Props = {
   variant?: 'default' | 'compact'
@@ -42,32 +77,134 @@ type Props = {
   hasActiveThread: boolean
   composerModel: string
   composerPickList: string[]
+  composerModelGroups?: ModelProviderModelGroup[]
+  composerReasoningEffort?: string
   onComposerModelChange: (modelId: string) => void
+  onComposerReasoningEffortChange?: (effort: ComposerReasoningEffort) => void
   hideModelPicker?: boolean
   modelPickerMode?: 'select' | 'combobox'
   queuedMessages: QueuedComposerMessage[]
   onRemoveQueuedMessage: (id: string) => void
+  attachments?: AttachmentReference[]
+  attachmentUploadEnabled?: boolean
+  attachmentUploadBusy?: boolean
+  attachmentUploadError?: string | null
+  webAccessAvailable?: boolean
+  onPickAttachments?: (files: File[]) => void
+  onPasteClipboardImage?: (options?: { silentNoImage?: boolean }) => void | Promise<void>
+  onRemoveAttachment?: (id: string) => void
   onSend: () => void
-  onInterrupt: () => void
-  onOpenRuntimePanel?: () => void
+  onInterrupt: (options?: { discard?: boolean }) => void
+  onPlanCommand?: () => void
+  onReviewCommand?: (target: ReviewTarget) => void
+  /**
+   * When set, the `/btw` slash command is offered. It is omitted from
+   * side-conversation composers (non-goal: no nested `/btw`).
+   */
+  onBtwCommand?: (seedText?: string) => void
+  /**
+   * Hide the `/btw` slash entry (e.g. inside a side conversation).
+   */
+  hideBtwCommand?: boolean
 }
 
-type SlashCommandId = 'plan' | 'agent' | 'compact' | 'fork' | 'archive' | 'restore' | 'runtime' | 'usage'
-
-type SlashCommand = {
-  id: SlashCommandId
-  title: string
-  description: string
-  keywords: string[]
-  icon: ReactElement
-  disabled?: boolean
+type ComposerTransferItem = {
+  kind?: string
+  type?: string
+  getAsFile?: () => File | null
 }
 
-function getSlashQuery(input: string): string | null {
-  const trimmed = input.trimStart()
-  if (!trimmed.startsWith('/')) return null
-  if (/\s/.test(trimmed)) return null
-  return trimmed.slice(1).toLowerCase()
+export type ComposerImageTransferSource = {
+  files?: ArrayLike<File> | null
+  items?: ArrayLike<ComposerTransferItem> | null
+}
+
+function arrayLikeValues<T>(value: ArrayLike<T> | null | undefined): T[] {
+  if (!value) return []
+  const out: T[] = []
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index]
+    if (item) out.push(item)
+  }
+  return out
+}
+
+function isImageMimeType(value: string | undefined): boolean {
+  return value?.toLowerCase().startsWith('image/') === true
+}
+
+function imageMimeTypeFromFileName(name: string | undefined): string | undefined {
+  const lower = name?.toLowerCase() ?? ''
+  if (lower.endsWith('.png')) return 'image/png'
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
+  if (lower.endsWith('.webp')) return 'image/webp'
+  if (lower.endsWith('.gif')) return 'image/gif'
+  if (lower.endsWith('.bmp')) return 'image/bmp'
+  if (lower.endsWith('.avif')) return 'image/avif'
+  if (lower.endsWith('.heic')) return 'image/heic'
+  if (lower.endsWith('.heif')) return 'image/heif'
+  return undefined
+}
+
+function normalizedImageFile(file: File, mimeTypeHint?: string): File | null {
+  const mimeType = isImageMimeType(file.type)
+    ? file.type
+    : isImageMimeType(mimeTypeHint)
+      ? mimeTypeHint
+      : imageMimeTypeFromFileName(file.name)
+  if (!mimeType) return null
+  if (file.type === mimeType) return file
+  return new File([file], file.name || 'image', {
+    type: mimeType,
+    lastModified: file.lastModified
+  })
+}
+
+export function imageFilesFromTransfer(source: ComposerImageTransferSource | null | undefined): File[] {
+  if (!source) return []
+  const files: File[] = []
+  const seen = new Set<File>()
+  const addFile = (file: File | null | undefined, mimeTypeHint?: string): void => {
+    if (!file || seen.has(file)) return
+    seen.add(file)
+    const normalized = normalizedImageFile(file, mimeTypeHint)
+    if (normalized) files.push(normalized)
+  }
+
+  for (const item of arrayLikeValues(source.items)) {
+    if (item.kind && item.kind !== 'file') continue
+    if (!isImageMimeType(item.type)) continue
+    addFile(item.getAsFile?.(), item.type)
+  }
+  for (const file of arrayLikeValues(source.files)) {
+    addFile(file)
+  }
+  return files
+}
+
+export function imageTransferHasImages(source: ComposerImageTransferSource | null | undefined): boolean {
+  if (!source) return false
+  if (arrayLikeValues(source.files).some((file) => normalizedImageFile(file) !== null)) return true
+  return arrayLikeValues(source.items).some((item) =>
+    (!item.kind || item.kind === 'file') && isImageMimeType(item.type)
+  )
+}
+
+export function formatGoalElapsedSeconds(seconds: number): string {
+  const value = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0))
+  if (value < 60) return `${value}s`
+  const minutes = Math.floor(value / 60)
+  const remainingSeconds = value % 60
+  if (value < 3600) {
+    return remainingSeconds === 0
+      ? `${minutes}m`
+      : `${minutes}m ${remainingSeconds}s`
+  }
+  const hours = Math.floor(value / 3600)
+  const remainingMinutes = Math.floor((value % 3600) / 60)
+  return remainingMinutes === 0
+    ? `${hours}h`
+    : `${hours}h ${remainingMinutes}m`
 }
 
 export function FloatingComposer({
@@ -82,31 +219,45 @@ export function FloatingComposer({
   hasActiveThread,
   composerModel,
   composerPickList,
+  composerModelGroups = [],
+  composerReasoningEffort,
   onComposerModelChange,
+  onComposerReasoningEffortChange,
   hideModelPicker = false,
   modelPickerMode = 'select',
   queuedMessages,
   onRemoveQueuedMessage,
+  attachments = [],
+  attachmentUploadEnabled = false,
+  attachmentUploadBusy = false,
+  attachmentUploadError = null,
+  onPickAttachments,
+  onPasteClipboardImage,
+  onRemoveAttachment,
   onSend,
   onInterrupt,
-  onOpenRuntimePanel
+  onPlanCommand,
+  onReviewCommand,
+  onBtwCommand,
+  hideBtwCommand = false
 }: Props): ReactElement {
-  const { t } = useTranslation('common')
+  const { t, i18n } = useTranslation('common')
   const route = useChatStore((s) => s.route)
   const workspaceRoot = useChatStore((s) => s.workspaceRoot)
   const activeThreadId = useChatStore((s) => s.activeThreadId)
+  const usageRefreshKey = useChatStore((s) => s.usageRefreshKey)
   const threads = useChatStore((s) => s.threads)
   const compactActiveThread = useChatStore((s) => s.compactActiveThread)
   const forkActiveThread = useChatStore((s) => s.forkActiveThread)
   const archiveThread = useChatStore((s) => s.archiveThread)
+  const activeThreadGoal = useChatStore((s) => s.activeThreadGoal)
+  const setActiveThreadGoal = useChatStore((s) => s.setActiveThreadGoal)
+  const setActiveThreadGoalStatus = useChatStore((s) => s.setActiveThreadGoalStatus)
+  const clearActiveThreadGoal = useChatStore((s) => s.clearActiveThreadGoal)
   const clawChannels = useChatStore((s) => s.clawChannels)
   const activeClawChannelId = useChatStore((s) => s.activeClawChannelId)
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
-  const composingRef = useRef(false)
-  const [focused, setFocused] = useState(false)
-  const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const compact = variant === 'compact'
-  const modelPickerRef = useRef<HTMLElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const activeClawChannel = useMemo(
     () => clawChannels.find((channel) => channel.id === activeClawChannelId) ?? null,
     [activeClawChannelId, clawChannels]
@@ -122,7 +273,7 @@ export function FloatingComposer({
   const threadUsageState = useThreadUsageState(
     activeThreadId,
     showThreadUsageFooter,
-    `${activeThread?.updatedAt ?? ''}:${busy ? 'busy' : 'idle'}`
+    `${activeThread?.updatedAt ?? ''}:${busy ? 'busy' : 'idle'}:${usageRefreshKey}`
   )
   const threadUsage = threadUsageState.usage
   const effectiveWorkspaceRoot = normalizeWorkspaceRoot(activeThreadWorkspace || workspaceRootOverride || workspaceRoot)
@@ -131,7 +282,11 @@ export function FloatingComposer({
     || activeClawChannel?.label.trim()
     || t('clawEmptyHeroFallbackName')
   const clawHasInboundConversation = Boolean(
-    activeClawChannel?.conversations.length || activeClawChannel?.remoteSession?.chatId?.trim()
+    activeThreadId ||
+    activeClawChannel?.threadId.trim() ||
+    activeClawChannel?.conversations.some((conversation) => conversation.localThreadId.trim()) ||
+    activeClawChannel?.conversations.length ||
+    activeClawChannel?.remoteSession?.chatId?.trim()
   )
 
   const canCompose = runtimeReady && (
@@ -140,77 +295,111 @@ export function FloatingComposer({
       : (hasActiveThread || !!effectiveWorkspaceRoot)
   )
   const canChangeModel = canCompose && !busy
-  const canSend = canCompose && input.trim().length > 0
+  const canSend = canCompose && (
+    input.trim().length > 0 ||
+    (attachmentUploadEnabled && attachments.length > 0)
+  )
+  const canPickAttachment = canCompose && attachmentUploadEnabled && !attachmentUploadBusy
+  const showIntentToolbar = !compact && route === 'chat'
+  const showComposerMenuButton = showIntentToolbar
+  const canTogglePlanMode = canCompose && Boolean(onPlanCommand)
+  const canOpenGoalPanel = canCompose && route !== 'claw'
+  const canRunReview = canCompose && route !== 'claw' && Boolean(onReviewCommand)
+  const canOpenComposerMenu = showComposerMenuButton && (canTogglePlanMode || canOpenGoalPanel || canRunReview)
+  const showToolbarStartControls = attachmentUploadEnabled || showComposerMenuButton
+  const stretchModelPicker =
+    compact && modelPickerMode === 'combobox' && !showToolbarStartControls && !hideModelPicker
+  const draft = useComposerDraft({ input, canCompose })
   const slashQuery = getSlashQuery(input)
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0)
-  const modelOptions = useMemo(() => {
-    const ordered = new Set<string>()
-    for (const id of composerPickList) {
-      const normalized = id.trim()
-      if (normalized) ordered.add(normalized)
-    }
-    const current = composerModel.trim()
-    if (current) ordered.add(current)
-    return [...ordered]
-  }, [composerModel, composerPickList])
+  const [composerMenuOpen, setComposerMenuOpen] = useState(false)
+  const [goalPanelOpen, setGoalPanelOpen] = useState(false)
+  const [goalRuntimeNowMs, setGoalRuntimeNowMs] = useState(() => Date.now())
+  const composerMenuButtonRef = useRef<HTMLButtonElement | null>(null)
+  const composerMenuPanelRef = useRef<HTMLDivElement | null>(null)
+  const goalPanelRef = useRef<HTMLDivElement | null>(null)
+  const goalRuntimeStartedAtRef = useRef<number | null>(null)
   const placeholder = !runtimeReady
     ? t('runtimeActionNeedsConnection')
     : !hasActiveThread && !effectiveWorkspaceRoot
       ? t('workspaceRequiredToCreateThread')
+      : goalPanelOpen && route !== 'claw'
+        ? t('goalComposerPlaceholder')
       : busy
         ? t('composerQueuePlaceholder')
-        : mode === 'plan'
-        ? t('composerPlanPlaceholder')
         : route === 'claw'
             ? clawHasInboundConversation
               ? t('clawPlaceholder', { name: clawAgentName })
               : t('clawPlaceholderNeedsInbound')
-            : hasActiveThread
-            ? t('placeholder')
-            : t('composerStartsThread')
+            : mode === 'plan'
+              ? t('composerPlanPlaceholder')
+              : hasActiveThread
+                ? t('placeholder')
+                : t('composerStartsThread')
   const footerHint = !runtimeReady
     ? t('composerOfflineHint')
     : !hasActiveThread && !effectiveWorkspaceRoot
       ? t('composerWorkspaceHint')
-      : mode === 'plan'
-        ? t('planModeActiveHint')
-        : route === 'claw'
+      : route === 'claw'
           ? clawHasInboundConversation
             ? t('clawComposerHint')
             : t('clawComposerHintNeedsInbound')
           : t('composerSlashHint')
   const slashCommands = useMemo<SlashCommand[]>(() => {
     const threadActionDisabled = !runtimeReady || busy || !activeThreadId
-    const commands: SlashCommand[] = [
-      {
+    const goalActionDisabled = !canOpenGoalPanel
+    const commands: SlashCommand[] = []
+    if (onPlanCommand) {
+      commands.push({
         id: 'plan',
         title: t('slashCommandPlanTitle'),
-        description:
-          mode === 'plan'
-            ? t('slashCommandPlanActiveDescription')
-            : t('slashCommandPlanDescription'),
+        description: t('slashCommandPlanDescription'),
         keywords: ['plan', 'planner', 'planning', '规划', '计划'],
         icon: <ListTodo className="h-4 w-4" strokeWidth={1.9} />
-      }
-    ]
-
-    if (mode === 'plan') {
-      commands.splice(1, 0, {
-        id: 'agent',
-        title: t('slashCommandAgentTitle'),
-        description: t('slashCommandAgentDescription'),
-        keywords: ['agent', 'default', 'normal', '代理', '默认'],
-        icon: <Bot className="h-4 w-4" strokeWidth={1.9} />
       })
     }
 
     if (route !== 'claw') {
+      commands.push({
+        id: 'goal',
+        title: t('slashCommandGoalTitle'),
+        description: t('slashCommandGoalDescription'),
+        keywords: ['goal', 'objective', 'target', '目标', '任务'],
+        icon: <Target className="h-4 w-4" strokeWidth={1.9} />,
+        disabled: goalActionDisabled
+      })
+
+      if (onBtwCommand && !hideBtwCommand) {
+        // `/btw` is available even while the main thread is busy — the
+        // point of the command is to run a parallel aside next to a
+        // running task.
+        commands.push({
+          id: 'btw',
+          title: t('slashCommandBtwTitle'),
+          description: t('slashCommandBtwDescription'),
+          keywords: ['btw', 'by-the-way', 'aside', 'side', '顺便', '旁支'],
+          icon: <MessageCircleMore className="h-4 w-4" strokeWidth={1.9} />,
+          disabled: !runtimeReady || !activeThreadId
+        })
+      }
+
+      if (onReviewCommand) {
+        commands.push({
+          id: 'review',
+          title: t('slashCommandReviewTitle'),
+          description: t('slashCommandReviewDescription'),
+          keywords: REVIEW_COMMAND_ALIASES,
+          icon: <SearchCode className="h-4 w-4" strokeWidth={1.9} />,
+          disabled: threadActionDisabled
+        })
+      }
+
       commands.push(
         {
           id: 'compact',
           title: t('slashCommandCompactTitle'),
           description: t('slashCommandCompactDescription'),
-          keywords: ['compact', 'summarize', 'compress', '压缩', '总结'],
+          keywords: COMPACT_COMMAND_ALIASES,
           icon: <Minimize2 className="h-4 w-4" strokeWidth={1.9} />,
           disabled: threadActionDisabled
         },
@@ -245,27 +434,20 @@ export function FloatingComposer({
       }
     }
 
-    commands.push(
-      {
-        id: 'usage',
-        title: t('slashCommandUsageTitle'),
-        description: t('slashCommandUsageDescription'),
-        keywords: ['usage', 'cost', 'tokens', '用量', '费用'],
-        icon: <BarChart3 className="h-4 w-4" strokeWidth={1.9} />,
-        disabled: !onOpenRuntimePanel
-      },
-      {
-        id: 'runtime',
-        title: t('slashCommandRuntimeTitle'),
-        description: t('slashCommandRuntimeDescription'),
-        keywords: ['runtime', 'status', 'tasks', 'mcp', '运行时'],
-        icon: <Gauge className="h-4 w-4" strokeWidth={1.9} />,
-        disabled: !onOpenRuntimePanel
-      }
-    )
-
     return commands
-  }, [activeThreadArchived, activeThreadId, busy, mode, onOpenRuntimePanel, route, runtimeReady, t])
+  }, [
+    activeThreadArchived,
+    activeThreadId,
+    busy,
+    canOpenGoalPanel,
+    hideBtwCommand,
+    onBtwCommand,
+    onPlanCommand,
+    onReviewCommand,
+    route,
+    runtimeReady,
+    t
+  ])
 
   const filteredSlashCommands = useMemo(() => {
     if (slashQuery == null) return []
@@ -280,115 +462,215 @@ export function FloatingComposer({
     filteredSlashCommands.length > 0
       ? filteredSlashCommands[Math.min(selectedCommandIndex, filteredSlashCommands.length - 1)]
       : null
+  const parsedGoalCommand = parseGoalCommand(input)
+  const goalPanelDraftObjective = getGoalPanelDraftObjective(input, goalPanelOpen)
+  const canSetGoalPanelDraft =
+    route !== 'claw'
+    && runtimeReady
+    && canOpenGoalPanel
+    && goalPanelDraftObjective.length > 0
   const primaryActionLabel = highlightedSlashCommand
     ? t('slashCommandApply')
+    : canSetGoalPanelDraft
+      ? t('goalSetCurrentInput')
     : busy
       ? t('queueMessage')
       : t('send')
   const primaryActionDisabled = highlightedSlashCommand
     ? highlightedSlashCommand.disabled === true
+    : canSetGoalPanelDraft
+      ? false
     : !canSend
-
-  const resizeTextarea = useCallback(() => {
-    const el = textareaRef.current
-    if (!el) return
-
-    el.style.height = '0px'
-    const nextHeight = Math.min(el.scrollHeight, 176)
-    const minHeight = 44
-    el.style.height = `${Math.max(nextHeight, minHeight)}px`
-    el.style.overflowY = el.scrollHeight > 176 ? 'auto' : 'hidden'
-  }, [])
-
-  useLayoutEffect(() => {
-    resizeTextarea()
-  }, [canCompose, input, resizeTextarea])
-
-  useEffect(() => {
-    const el = textareaRef.current
-    if (!el || typeof ResizeObserver === 'undefined') return
-
-    let frame = 0
-    let previousWidth = el.getBoundingClientRect().width
-    const observer = new ResizeObserver(([entry]) => {
-      const nextWidth = entry?.contentRect.width ?? el.getBoundingClientRect().width
-      if (Math.abs(nextWidth - previousWidth) < 0.5) return
-      previousWidth = nextWidth
-      window.cancelAnimationFrame(frame)
-      frame = window.requestAnimationFrame(resizeTextarea)
-    })
-
-    observer.observe(el)
-
-    return () => {
-      window.cancelAnimationFrame(frame)
-      observer.disconnect()
-    }
-  }, [resizeTextarea])
+  const goalRuntimeStartedAtMs = goalRuntimeStartedAtRef.current
+  const liveGoalElapsedSeconds =
+    busy && activeThreadGoal?.status === 'active' && goalRuntimeStartedAtMs != null
+      ? Math.max(0, Math.floor((goalRuntimeNowMs - goalRuntimeStartedAtMs) / 1000))
+      : 0
+  const goalElapsedLabel = activeThreadGoal
+    ? formatGoalElapsedSeconds((activeThreadGoal.timeUsedSeconds ?? 0) + liveGoalElapsedSeconds)
+    : ''
+  const goalBannerLabel = activeThreadGoal
+    ? activeThreadGoal.status === 'active'
+      ? t('goalActiveHeading')
+      : t(`goalStatusShort.${activeThreadGoal.status}`)
+    : ''
+  const goalMenuChecked = activeThreadGoal?.status === 'active'
 
   useEffect(() => {
     setSelectedCommandIndex(0)
   }, [slashQuery])
 
   useEffect(() => {
-    if (!modelMenuOpen) return
+    if (slashQuery != null || goalPanelOpen) setComposerMenuOpen(false)
+  }, [goalPanelOpen, slashQuery])
+
+  useEffect(() => {
+    if (!composerMenuOpen && !goalPanelOpen) return
+
     const onPointerDown = (event: PointerEvent): void => {
       const target = event.target
       if (!(target instanceof Node)) return
-      if (modelPickerRef.current?.contains(target)) return
-      setModelMenuOpen(false)
+      if (composerMenuButtonRef.current?.contains(target)) return
+      if (composerMenuPanelRef.current?.contains(target)) return
+      if (goalPanelRef.current?.contains(target)) return
+      setComposerMenuOpen(false)
+      setGoalPanelOpen(false)
     }
-    window.addEventListener('pointerdown', onPointerDown)
-    return () => window.removeEventListener('pointerdown', onPointerDown)
-  }, [modelMenuOpen])
 
-  const focusComposer = (): void => {
-    window.requestAnimationFrame(() => textareaRef.current?.focus())
-  }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      setComposerMenuOpen(false)
+      setGoalPanelOpen(false)
+    }
+
+    window.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [composerMenuOpen, goalPanelOpen])
+
+  useEffect(() => {
+    const shouldTimeGoal = busy && activeThreadGoal?.status === 'active'
+    if (!shouldTimeGoal) {
+      goalRuntimeStartedAtRef.current = null
+      setGoalRuntimeNowMs(Date.now())
+      return
+    }
+
+    if (goalRuntimeStartedAtRef.current == null) {
+      const startedAt = Date.now()
+      goalRuntimeStartedAtRef.current = startedAt
+      setGoalRuntimeNowMs(startedAt)
+    }
+
+    const interval = window.setInterval(() => {
+      setGoalRuntimeNowMs(Date.now())
+    }, 1000)
+    return () => window.clearInterval(interval)
+  }, [busy, activeThreadGoal?.createdAt, activeThreadGoal?.objective, activeThreadGoal?.status])
 
   const applySlashCommand = (commandId: SlashCommandId): void => {
     if (commandId === 'plan') {
+      setInput('')
       setMode('plan')
-      setInput('')
-      focusComposer()
-      return
-    }
-    if (commandId === 'agent') {
-      setMode('agent')
-      setInput('')
-      focusComposer()
+      onPlanCommand?.()
+      draft.focusComposer()
       return
     }
     if (commandId === 'compact') {
       setInput('')
       void compactActiveThread()
-      focusComposer()
+      draft.focusComposer()
+      return
+    }
+    if (commandId === 'goal') {
+      setInput('')
+      setGoalPanelOpen(true)
+      draft.focusComposer()
+      return
+    }
+    if (commandId === 'review' && onReviewCommand) {
+      setInput('')
+      void onReviewCommand({ kind: 'uncommittedChanges' })
+      draft.focusComposer()
       return
     }
     if (commandId === 'fork') {
       setInput('')
       void forkActiveThread()
-      focusComposer()
+      draft.focusComposer()
       return
     }
     if (commandId === 'archive' && activeThreadId) {
       setInput('')
       void archiveThread(activeThreadId, true)
-      focusComposer()
+      draft.focusComposer()
       return
     }
     if (commandId === 'restore' && activeThreadId) {
       setInput('')
       void archiveThread(activeThreadId, false)
-      focusComposer()
+      draft.focusComposer()
       return
     }
-    if (commandId === 'runtime' || commandId === 'usage') {
+    if (commandId === 'btw' && onBtwCommand) {
+      // Empty aside — open a side conversation without a seed question.
       setInput('')
-      onOpenRuntimePanel?.()
-      focusComposer()
+      void onBtwCommand()
       return
     }
+  }
+
+  const runGoalCommand = (command: ReturnType<typeof parseGoalCommand>): boolean => {
+    if (command === false) return false
+    if (!canOpenGoalPanel) return true
+    setInput('')
+    setGoalPanelOpen(false)
+    if (command.action === 'menu') {
+      setGoalPanelOpen(true)
+      draft.focusComposer()
+      return true
+    }
+    if (command.action === 'set') {
+      void setActiveThreadGoal(command.objective)
+      return true
+    }
+    if (command.action === 'pause') {
+      void setActiveThreadGoalStatus('paused')
+      return true
+    }
+    if (command.action === 'resume') {
+      void setActiveThreadGoalStatus('active')
+      return true
+    }
+    if (command.action === 'clear') {
+      void clearActiveThreadGoal()
+      return true
+    }
+    return true
+  }
+
+  const setGoalFromComposerInput = (): boolean => {
+    if (!canSetGoalPanelDraft) return false
+    setInput('')
+    setGoalPanelOpen(false)
+    void setActiveThreadGoal(goalPanelDraftObjective)
+    draft.focusComposer()
+    return true
+  }
+
+  const handleComposerMenuButtonClick = (): void => {
+    if (!canOpenComposerMenu) return
+    setGoalPanelOpen(false)
+    setComposerMenuOpen((open) => !open)
+    draft.focusComposer()
+  }
+
+  const handlePlanToolbarClick = (): void => {
+    if (!canTogglePlanMode) return
+    setComposerMenuOpen(false)
+    if (mode === 'plan') {
+      setMode('agent')
+    } else {
+      setMode('plan')
+      onPlanCommand?.()
+    }
+    draft.focusComposer()
+  }
+
+  const handleGoalMenuClick = (): void => {
+    if (!canOpenGoalPanel) return
+    setComposerMenuOpen(false)
+    if (activeThreadGoal?.status === 'active') {
+      void setActiveThreadGoalStatus('paused')
+    } else if (activeThreadGoal) {
+      void setActiveThreadGoalStatus('active')
+    } else {
+      setGoalPanelOpen(true)
+    }
+    draft.focusComposer()
   }
 
   const handlePrimaryAction = (): void => {
@@ -397,7 +679,113 @@ export function FloatingComposer({
       applySlashCommand(highlightedSlashCommand.id)
       return
     }
+    if (setGoalFromComposerInput()) {
+      return
+    }
+    if (runGoalCommand(parsedGoalCommand)) {
+      return
+    }
+    const compactCommand = parseCompactCommand(input)
+    if (compactCommand) {
+      const command = slashCommands.find((item) => item.id === 'compact')
+      if (command?.disabled) return
+      setInput('')
+      void compactActiveThread(compactCommand.reason)
+      draft.focusComposer()
+      return
+    }
+    if (onReviewCommand) {
+      const reviewCommand = parseReviewCommand(input)
+      if (reviewCommand !== false) {
+        const command = slashCommands.find((item) => item.id === 'review')
+        if (command?.disabled) return
+        setInput('')
+        void onReviewCommand(reviewCommand)
+        draft.focusComposer()
+        return
+      }
+    }
+    // Send-time interception: `/btw <question>` is treated as a side
+    // conversation spawn, mirroring the plan-mode interception.
+    if (onBtwCommand && !hideBtwCommand) {
+      const parsed = parseBtwCommand(input)
+      if (parsed !== false) {
+        setInput('')
+        void onBtwCommand(parsed ?? undefined)
+        return
+      }
+    }
     onSend()
+  }
+
+  const handleComposerKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
+    const sendByEnter =
+      event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey
+    const composing = draft.isComposingEvent(event)
+
+    if (!composing && slashQuery != null) {
+      if (event.key === 'ArrowDown' && filteredSlashCommands.length > 0) {
+        event.preventDefault()
+        setSelectedCommandIndex((current) => (current + 1) % filteredSlashCommands.length)
+        return
+      }
+      if (event.key === 'ArrowUp' && filteredSlashCommands.length > 0) {
+        event.preventDefault()
+        setSelectedCommandIndex((current) =>
+          current === 0 ? filteredSlashCommands.length - 1 : current - 1
+        )
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setInput('')
+        return
+      }
+    }
+
+    if (!sendByEnter || composing) return
+
+    event.preventDefault()
+    handlePrimaryAction()
+  }
+
+  const handleAttachmentInput = (event: ChangeEvent<HTMLInputElement>): void => {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (files.length === 0 || !onPickAttachments) return
+    onPickAttachments(files)
+  }
+
+  const handleComposerPaste = (event: ReactClipboardEvent<HTMLElement>): void => {
+    if (!canPickAttachment || (!onPickAttachments && !onPasteClipboardImage)) return
+    const files = imageFilesFromTransfer(event.clipboardData)
+    const hasPlainText = Boolean(event.clipboardData.getData('text/plain'))
+    const hasImageTransfer = imageTransferHasImages(event.clipboardData)
+    if (files.length > 0) {
+      event.preventDefault()
+      onPickAttachments?.(files)
+      return
+    }
+    if (!onPasteClipboardImage) return
+
+    const shouldPreventDefault = !hasPlainText || hasImageTransfer
+    if (shouldPreventDefault) event.preventDefault()
+    void onPasteClipboardImage({ silentNoImage: !shouldPreventDefault })
+  }
+
+  const handleComposerDragOver = (event: ReactDragEvent<HTMLDivElement>): void => {
+    if (!canPickAttachment || !imageTransferHasImages(event.dataTransfer)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleComposerDrop = (event: ReactDragEvent<HTMLDivElement>): void => {
+    if (!canPickAttachment || !onPickAttachments) return
+    const files = imageFilesFromTransfer(event.dataTransfer)
+    if (files.length === 0) return
+    event.preventDefault()
+    onPickAttachments(files)
+    draft.focusComposer()
   }
 
   return (
@@ -405,39 +793,127 @@ export function FloatingComposer({
       ? 'ds-floating-composer pointer-events-auto w-full pb-0 pt-0'
       : 'ds-floating-composer ds-chat-column-inset pointer-events-auto w-full max-w-4xl pb-5 pt-1'}
     >
-      {queuedMessages.length > 0 ? (
-        <div className="mb-2 rounded-[22px] border border-ds-border bg-ds-card/88 px-4 py-3 shadow-sm backdrop-blur-xl">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="inline-flex items-center gap-2 text-[13px] font-medium text-ds-ink">
-              <Clock3 className="h-3.5 w-3.5 text-ds-muted" strokeWidth={1.9} />
-              <span>{t('queuedMessagesTitle', { count: queuedMessages.length })}</span>
-            </div>
-            <div className="text-[12px] text-ds-muted">{t('queuedMessagesHint')}</div>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {queuedMessages.map((message, index) => (
-              <div
-                key={message.id}
-                className="flex min-w-0 max-w-full items-center gap-2 rounded-full border border-ds-border-muted bg-ds-main/80 px-3 py-1.5 text-[13px] text-ds-ink"
-              >
-                <span className="shrink-0 text-ds-faint">{index + 1}.</span>
-                <span className="max-w-[360px] truncate">{message.text}</span>
-                <button
-                  type="button"
-                  onClick={() => onRemoveQueuedMessage(message.id)}
-                  className="shrink-0 rounded-full p-0.5 text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
-                  aria-label={t('queuedMessageRemove')}
-                  title={t('queuedMessageRemove')}
-                >
-                  <X className="h-3.5 w-3.5" strokeWidth={2} />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      <FloatingComposerQueuedMessages
+        messages={queuedMessages}
+        onRemove={onRemoveQueuedMessage}
+      />
 
       <div className="relative">
+        {!compact && activeThreadGoal && slashQuery == null && !goalPanelOpen && !composerMenuOpen ? (
+          <div className="pointer-events-none absolute inset-x-3 bottom-full z-20 mb-2 flex justify-center">
+            <div className="pointer-events-auto flex min-h-11 w-full max-w-[46rem] items-center gap-2 rounded-full border border-ds-border bg-ds-card/95 px-3 py-1.5 text-ds-muted shadow-[0_12px_34px_rgba(15,23,42,0.10)] backdrop-blur-xl dark:bg-ds-card/90">
+              <Target className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.9} />
+              <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] leading-5">
+                <span className="shrink-0 font-semibold text-ds-ink">
+                  {goalBannerLabel}
+                </span>
+                <span className="min-w-0 truncate text-ds-muted">
+                  {activeThreadGoal.objective}
+                </span>
+                <span className="shrink-0 text-ds-faint">
+                  · {goalElapsedLabel}
+                </span>
+              </div>
+              <div className="flex shrink-0 items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGoalPanelOpen(true)
+                    draft.focusComposer()
+                  }}
+                  className="ds-no-drag flex h-7 w-7 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+                  aria-label={t('goalActionEdit')}
+                  title={t('goalActionEdit')}
+                >
+                  <Pencil className="h-3.5 w-3.5" strokeWidth={1.9} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void setActiveThreadGoalStatus(activeThreadGoal.status === 'active' ? 'paused' : 'active')
+                  }}
+                  className="ds-no-drag flex h-7 w-7 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+                  aria-label={activeThreadGoal.status === 'active' ? t('goalActionPause') : t('goalActionResume')}
+                  title={activeThreadGoal.status === 'active' ? t('goalActionPause') : t('goalActionResume')}
+                >
+                  {activeThreadGoal.status === 'active' ? (
+                    <PauseCircle className="h-3.5 w-3.5" strokeWidth={1.9} />
+                  ) : (
+                    <PlayCircle className="h-3.5 w-3.5" strokeWidth={1.9} />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void clearActiveThreadGoal()
+                  }}
+                  className="ds-no-drag flex h-7 w-7 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+                  aria-label={t('goalActionClear')}
+                  title={t('goalActionClear')}
+                >
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.9} />
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {composerMenuOpen && slashQuery == null ? (
+          <div
+            ref={composerMenuPanelRef}
+            className="absolute bottom-12 left-1 z-40 w-48 overflow-hidden rounded-[18px] border border-ds-border bg-white py-1.5 text-[13px] text-ds-muted shadow-[0_18px_48px_rgba(15,23,42,0.16)] dark:bg-ds-card"
+          >
+            <button
+              type="button"
+              disabled={!canTogglePlanMode}
+              onClick={handlePlanToolbarClick}
+              className="ds-no-drag flex h-8 w-full items-center gap-2 px-3 text-left transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ds-muted"
+            >
+              <ListTodo className="h-3.5 w-3.5 shrink-0" strokeWidth={1.9} />
+              <span className="min-w-0 flex-1 truncate">{t('composerMenuPlanMode')}</span>
+              <span
+                role="switch"
+                aria-checked={mode === 'plan'}
+                className={`relative h-5 w-9 shrink-0 rounded-full ring-1 transition ${
+                  mode === 'plan'
+                    ? 'bg-accent ring-accent/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.24)]'
+                    : 'bg-ds-border-muted ring-ds-border-muted'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 h-4 w-4 rounded-full bg-white ring-1 ring-black/5 transition ${
+                    mode === 'plan' ? 'translate-x-[17px]' : 'translate-x-0.5'
+                  } shadow-[0_1px_4px_rgba(15,23,42,0.28)]`}
+                />
+              </span>
+            </button>
+            <button
+              type="button"
+              disabled={!canOpenGoalPanel}
+              onClick={handleGoalMenuClick}
+              className="ds-no-drag flex h-8 w-full items-center gap-2 px-3 text-left transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ds-muted"
+            >
+              <Target className="h-3.5 w-3.5 shrink-0" strokeWidth={1.9} />
+              <span className="min-w-0 flex-1 truncate">{t('composerMenuPursueGoal')}</span>
+              <span
+                role="switch"
+                aria-checked={goalMenuChecked}
+                className={`relative h-5 w-9 shrink-0 rounded-full ring-1 transition ${
+                  goalMenuChecked
+                    ? 'bg-accent ring-accent/35 shadow-[inset_0_1px_0_rgba(255,255,255,0.24)]'
+                    : 'bg-ds-border-muted ring-ds-border-muted'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 h-4 w-4 rounded-full bg-white ring-1 ring-black/5 transition ${
+                    goalMenuChecked ? 'translate-x-[17px]' : 'translate-x-0.5'
+                  } shadow-[0_1px_4px_rgba(15,23,42,0.28)]`}
+                />
+              </span>
+            </button>
+          </div>
+        ) : null}
+
         {slashQuery != null ? (
           <div className="ds-card-strong absolute inset-x-2 bottom-full z-30 mb-3 overflow-hidden rounded-[26px] p-2 shadow-[0_26px_70px_rgba(15,23,42,0.16)]">
             <div className="px-3 pb-2 pt-1 text-[12px] font-medium uppercase tracking-[0.14em] text-ds-faint">
@@ -479,11 +955,6 @@ export function FloatingComposer({
                         <span className="rounded-full border border-ds-border-muted px-2.5 py-1 text-[11px] font-semibold text-ds-faint">
                           /{command.id}
                         </span>
-                        {command.id === 'plan' && mode === 'plan' ? (
-                          <span className="rounded-full bg-accent/10 px-2.5 py-1 text-[11px] font-semibold text-accent">
-                            {t('slashCommandCurrent')}
-                          </span>
-                        ) : null}
                       </span>
                     </button>
                   )
@@ -497,197 +968,282 @@ export function FloatingComposer({
           </div>
         ) : null}
 
-        <div
-          className={`ds-composer-shell ds-chat-composer ds-frosted flex flex-col gap-2 px-4 py-2.5 transition ${
-            focused ? 'ds-chat-composer-focus' : ''
-          } ${compact ? 'rounded-[24px] px-3 py-2 shadow-none' : ''}`}
-        >
-          {mode === 'plan' ? (
-            <div className="flex items-center gap-2 px-1 pt-1">
-              <button
-                type="button"
-                onClick={() => setMode('agent')}
-                className="ds-chip-active ds-no-drag inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[13px] font-semibold text-ds-ink transition hover:brightness-105"
-                title={t('removePlan')}
-                aria-label={t('removePlan')}
-              >
-                <ListTodo className="h-3.5 w-3.5 text-accent" strokeWidth={2} />
-                <span>{t('planMode')}</span>
-              </button>
-            </div>
-          ) : null}
-
-          <div className="flex items-end gap-3">
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              className={`ds-no-drag block min-w-0 flex-1 resize-none break-words bg-transparent px-2 py-2 text-[15px] leading-[1.55] text-ds-ink placeholder:text-ds-faint focus:outline-none [overflow-wrap:anywhere] ${
-                canCompose ? '' : 'opacity-80'
-              } ${compact ? 'text-[14px]' : ''}`}
-              placeholder={placeholder}
-              value={input}
-              disabled={!canCompose}
-              onChange={(e) => setInput(e.target.value)}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              onCompositionStart={() => {
-                composingRef.current = true
-              }}
-              onCompositionEnd={() => {
-                composingRef.current = false
-              }}
-              onKeyDown={(e) => {
-                const sendByEnter =
-                  e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey
-                const composing =
-                  e.nativeEvent.isComposing || composingRef.current || e.keyCode === 229
-
-                if (!composing && slashQuery != null) {
-                  if (e.key === 'ArrowDown' && filteredSlashCommands.length > 0) {
-                    e.preventDefault()
-                    setSelectedCommandIndex((current) => (current + 1) % filteredSlashCommands.length)
-                    return
-                  }
-                  if (e.key === 'ArrowUp' && filteredSlashCommands.length > 0) {
-                    e.preventDefault()
-                    setSelectedCommandIndex((current) =>
-                      current === 0 ? filteredSlashCommands.length - 1 : current - 1
-                    )
-                    return
-                  }
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    setInput('')
-                    return
-                  }
-                }
-
-                if (!sendByEnter || composing) return
-
-                e.preventDefault()
-                handlePrimaryAction()
-              }}
-            />
-
-            {hideModelPicker ? null : modelPickerMode === 'combobox' ? (
-              <div
-                ref={(node) => {
-                  modelPickerRef.current = node
-                }}
-                className={`ds-composer-model-picker ds-no-drag relative flex shrink-0 items-center ${
-                  compact ? 'w-[92px] max-w-[92px]' : 'max-w-[220px]'
-                }`}
-              >
-                <span className="sr-only">{t('composerModel')}</span>
-                <input
-                  value={composerModel}
-                  disabled={!canChangeModel}
-                  onChange={(e) => onComposerModelChange(e.target.value)}
-                  onFocus={() => setModelMenuOpen(true)}
-                  placeholder={t('composerModelDefault')}
-                  title={t('composerModel')}
-                  className={`min-w-0 flex-1 truncate rounded-full bg-transparent py-2 pl-3 pr-7 text-right text-[13px] font-medium outline-none transition ${
-                    canChangeModel
-                      ? 'text-ds-muted placeholder:text-ds-faint hover:text-ds-ink focus:text-ds-ink'
-                      : 'cursor-not-allowed text-ds-faint'
-                  }`}
-                />
-                <button
-                  type="button"
-                  disabled={!canChangeModel}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setModelMenuOpen((open) => !open)}
-                  className="absolute right-1.5 flex h-7 w-7 items-center justify-center rounded-full text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ds-faint"
-                  aria-label={t('composerModel')}
-                  title={t('composerModel')}
-                >
-                  <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.8} />
-                </button>
-                {modelMenuOpen && canChangeModel ? (
-                  <div className="absolute bottom-full right-0 z-50 mb-2 max-h-56 w-[220px] overflow-y-auto rounded-2xl border border-ds-border bg-white p-1.5 text-[12.5px] shadow-[0_18px_50px_rgba(15,23,42,0.16)] dark:bg-ds-card">
+        {goalPanelOpen && slashQuery == null ? (
+          <div
+            ref={goalPanelRef}
+            className="absolute inset-x-2 bottom-full z-30 mb-3 overflow-hidden rounded-[26px] border border-ds-border bg-ds-card/95 p-3 shadow-[0_18px_52px_rgba(15,23,42,0.14)] backdrop-blur-xl dark:bg-ds-card/90"
+          >
+            <div className="flex items-start gap-3">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-ds-border-muted text-ds-muted">
+                <Target className="h-4 w-4" strokeWidth={1.9} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="truncate text-[14px] font-semibold text-ds-ink">
+                    {activeThreadGoal ? activeThreadGoal.objective : t('goalNoActiveTitle')}
+                  </div>
+                  {activeThreadGoal ? (
+                    <span className="shrink-0 rounded-lg border border-ds-border-muted bg-ds-card px-2 py-0.5 text-[11px] font-semibold text-ds-muted">
+                      {t(`goalStatusShort.${activeThreadGoal.status}`)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {canSetGoalPanelDraft ? (
                     <button
                       type="button"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        onComposerModelChange('')
-                        setModelMenuOpen(false)
-                      }}
-                      className={`flex w-full items-center rounded-xl px-3 py-2 text-left font-medium transition hover:bg-ds-hover ${
-                        composerModel.trim() === '' ? 'text-accent' : 'text-ds-muted'
-                      }`}
+                      onClick={setGoalFromComposerInput}
+                      className="rounded-full border border-ds-border bg-ds-card px-3 py-1.5 text-[12px] font-semibold text-ds-ink transition hover:bg-ds-hover"
                     >
-                      {t('composerModelDefault')}
+                      {t('goalSetCurrentInput')}
                     </button>
-                    {modelOptions.map((id) => (
-                      <button
-                        type="button"
-                        key={id}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => {
-                          onComposerModelChange(id)
-                          setModelMenuOpen(false)
-                        }}
-                        className={`flex w-full items-center rounded-xl px-3 py-2 text-left font-medium transition hover:bg-ds-hover ${
-                          composerModel.trim() === id ? 'text-accent' : 'text-ds-muted'
-                        }`}
-                      >
-                        <span className="min-w-0 truncate">{id}</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
+                  ) : null}
+                  {activeThreadGoal?.status === 'active' ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGoalPanelOpen(false)
+                        void setActiveThreadGoalStatus('paused')
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-ds-border bg-ds-card text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink"
+                      aria-label={t('goalActionPause')}
+                      title={t('goalActionPause')}
+                    >
+                      <PauseCircle className="h-4 w-4" strokeWidth={1.9} />
+                    </button>
+                  ) : activeThreadGoal ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGoalPanelOpen(false)
+                        void setActiveThreadGoalStatus('active')
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-ds-border bg-ds-card text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink"
+                      aria-label={t('goalActionResume')}
+                      title={t('goalActionResume')}
+                    >
+                      <PlayCircle className="h-4 w-4" strokeWidth={1.9} />
+                    </button>
+                  ) : null}
+                  {activeThreadGoal ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGoalPanelOpen(false)
+                        void clearActiveThreadGoal()
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-ds-border bg-ds-card text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink"
+                      aria-label={t('goalActionClear')}
+                      title={t('goalActionClear')}
+                    >
+                      <Trash2 className="h-4 w-4" strokeWidth={1.9} />
+                    </button>
+                  ) : null}
+                </div>
               </div>
-            ) : (
-              <label className={`ds-composer-model-picker ds-no-drag relative shrink-0 items-center ${
-                compact ? 'w-[92px] max-w-[92px]' : 'max-w-[220px]'
-              }`} ref={(node) => {
-                modelPickerRef.current = node
-              }}>
-                <span className="sr-only">{t('composerModel')}</span>
-                <select
-                  value={composerModel}
-                  disabled={!canChangeModel}
-                  onChange={(e) => onComposerModelChange(e.target.value)}
-                  title={t('composerModel')}
-                  className={`max-w-full cursor-pointer appearance-none truncate rounded-full bg-transparent py-2 pl-3 pr-7 text-[15px] font-medium transition ${
-                    canChangeModel
-                      ? 'text-ds-muted hover:text-ds-ink'
-                      : 'cursor-not-allowed text-ds-faint'
-                  }`}
-                >
-                  <option value="">{t('composerModelDefault')}</option>
-                  {modelOptions.map((id) => (
-                    <option key={id} value={id}>
-                      {id}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-ds-faint" strokeWidth={1.8} />
-              </label>
-            )}
-
-            {busy ? (
               <button
                 type="button"
-                onClick={onInterrupt}
-                className="ds-no-drag flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-ds-border bg-ds-card text-ds-muted shadow-sm transition hover:bg-ds-hover hover:text-ds-ink"
-                aria-label={t('interrupt')}
-                title={t('interrupt')}
+                onClick={() => setGoalPanelOpen(false)}
+                className="rounded-lg p-1.5 text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+                aria-label={t('close')}
+                title={t('close')}
               >
-                <Square className="h-3.5 w-3.5" strokeWidth={2.4} />
+                <X className="h-4 w-4" strokeWidth={2} />
               </button>
-            ) : null}
+            </div>
+          </div>
+        ) : null}
 
-            <button
-              type="button"
-              disabled={primaryActionDisabled}
-              onClick={handlePrimaryAction}
-              className="ds-no-drag flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-accent/15 bg-accent text-white shadow-[0_10px_24px_rgba(79,124,255,0.28)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:border-ds-border disabled:bg-ds-card disabled:text-ds-faint disabled:shadow-none"
-              aria-label={primaryActionLabel}
-              title={primaryActionLabel}
+        <div
+          className={`ds-composer-shell ds-chat-composer ds-frosted flex flex-col gap-2 px-4 pb-3 pt-3 transition ${
+            draft.focused ? 'ds-chat-composer-focus' : ''
+          } ${compact ? 'rounded-[24px] px-3 py-2 shadow-none' : ''}`}
+          onPaste={handleComposerPaste}
+          onDragOver={handleComposerDragOver}
+          onDrop={handleComposerDrop}
+        >
+          <textarea
+            ref={draft.textareaRef}
+            rows={1}
+            className={`ds-no-drag block min-w-0 resize-none break-words bg-transparent px-1 py-1 text-[15px] leading-[1.55] text-ds-ink placeholder:text-ds-faint focus:outline-none [overflow-wrap:anywhere] ${
+              canCompose ? '' : 'opacity-80'
+            } ${compact ? 'text-[14px]' : 'min-h-[54px]'}`}
+            placeholder={placeholder}
+            value={input}
+            disabled={!canCompose}
+            onChange={(e) => setInput(e.target.value)}
+            onFocus={draft.onFocus}
+            onBlur={draft.onBlur}
+            onCompositionStart={draft.onCompositionStart}
+            onCompositionEnd={draft.onCompositionEnd}
+            onKeyDown={handleComposerKeyDown}
+          />
+          {attachments.length > 0 || attachmentUploadError ? (
+            <div className="flex flex-wrap items-center gap-2 px-1">
+              {attachments.map((attachment) => (
+                attachment.previewUrl ? (
+                  <span
+                    key={attachment.id}
+                    className="ds-no-drag relative block h-20 w-20 overflow-hidden rounded-lg border border-ds-border-muted bg-ds-card shadow-sm"
+                    title={attachment.name || attachment.id}
+                  >
+                    <img
+                      src={attachment.previewUrl}
+                      alt={attachment.name || attachment.id}
+                      className="h-full w-full object-cover"
+                    />
+                    {onRemoveAttachment ? (
+                      <button
+                        type="button"
+                        onClick={() => onRemoveAttachment(attachment.id)}
+                        className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-zinc-950 text-white shadow-sm transition hover:bg-zinc-800"
+                        aria-label={t('composerRemoveAttachment')}
+                        title={t('composerRemoveAttachment')}
+                      >
+                        <X className="h-3 w-3" strokeWidth={2.2} />
+                      </button>
+                    ) : null}
+                  </span>
+                ) : (
+                  <span
+                    key={attachment.id}
+                    className="ds-no-drag inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg border border-ds-border-muted bg-ds-card/80 px-2 text-[12px] font-medium text-ds-muted"
+                    title={attachment.id}
+                  >
+                    <ImagePlus className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
+                    <span className="max-w-40 truncate">{attachment.name || attachment.id}</span>
+                    {onRemoveAttachment ? (
+                      <button
+                        type="button"
+                        onClick={() => onRemoveAttachment(attachment.id)}
+                        className="rounded-full p-0.5 text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+                        aria-label={t('composerRemoveAttachment')}
+                        title={t('composerRemoveAttachment')}
+                      >
+                        <X className="h-3 w-3" strokeWidth={2} />
+                      </button>
+                    ) : null}
+                  </span>
+                )
+              ))}
+              {attachmentUploadError ? (
+                <span className="min-w-0 break-words text-[12px] font-medium text-red-600 dark:text-red-300">
+                  {attachmentUploadError}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          <div
+            className={`ds-composer-toolbar flex min-h-10 items-center gap-3 ${
+              showToolbarStartControls ? 'justify-between' : 'justify-end'
+            }`}
+          >
+            {showToolbarStartControls ? (
+              <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden">
+                {attachmentUploadEnabled ? (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      multiple
+                      className="hidden"
+                      onChange={handleAttachmentInput}
+                    />
+                    <button
+                      type="button"
+                      disabled={!canPickAttachment}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="ds-no-drag flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-45"
+                      aria-label={t('composerAddImage')}
+                      title={t('composerAddImage')}
+                    >
+                      {attachmentUploadBusy ? (
+                        <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />
+                      ) : (
+                        <ImagePlus className="h-4 w-4" strokeWidth={1.8} />
+                      )}
+                    </button>
+                  </>
+                ) : null}
+                {showComposerMenuButton ? (
+                  <>
+                    <button
+                      ref={composerMenuButtonRef}
+                      type="button"
+                      disabled={!canOpenComposerMenu}
+                      onClick={handleComposerMenuButtonClick}
+                      className={`ds-no-drag flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-45 ${
+                        composerMenuOpen ? 'bg-ds-hover text-ds-ink' : ''
+                      }`}
+                      aria-label={t('composerMenuTitle')}
+                      title={t('composerMenuTitle')}
+                    >
+                      <Plus className="h-5 w-5" strokeWidth={1.8} />
+                    </button>
+                    {mode === 'plan' ? (
+                      <span
+                        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-ds-hover px-2.5 text-[13px] font-medium text-ds-muted"
+                        title={t('slashCommandPlanTitle')}
+                      >
+                        <ListTodo className="h-3.5 w-3.5" strokeWidth={1.9} />
+                        <span>{t('slashCommandPlanTitle')}</span>
+                      </span>
+                    ) : null}
+                    {activeThreadGoal?.status === 'active' ? (
+                      <span
+                        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-ds-hover px-2.5 text-[13px] font-medium text-ds-muted"
+                        title={t('slashCommandGoalTitle')}
+                      >
+                        <Target className="h-3.5 w-3.5" strokeWidth={1.9} />
+                        <span>{t('slashCommandGoalTitle')}</span>
+                      </span>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+            <div
+              className={`flex min-w-0 items-center justify-end gap-1.5 ${
+                stretchModelPicker ? 'flex-1' : 'shrink-0'
+              }`}
             >
-              <Send className="h-4 w-4" strokeWidth={2.2} />
-            </button>
+              {hideModelPicker ? null : (
+                <FloatingComposerModelPicker
+                  compact={compact}
+                  mode={modelPickerMode}
+                  composerModel={composerModel}
+                  composerPickList={composerPickList}
+                  composerModelGroups={composerModelGroups}
+                  composerReasoningEffort={composerReasoningEffort}
+                  canChangeModel={canChangeModel}
+                  stretch={stretchModelPicker}
+                  onComposerModelChange={onComposerModelChange}
+                  onComposerReasoningEffortChange={onComposerReasoningEffortChange}
+                />
+              )}
+              {busy ? (
+                <button
+                  type="button"
+                  onClick={() => onInterrupt()}
+                  className="ds-no-drag flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-white shadow-[0_10px_22px_rgba(15,23,42,0.22)] transition hover:bg-zinc-800 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+                  aria-label={t('interrupt')}
+                  title={t('interrupt')}
+                >
+                  <Square className="h-3.5 w-3.5 fill-current" strokeWidth={2.4} />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                disabled={primaryActionDisabled}
+                onClick={handlePrimaryAction}
+                className="ds-no-drag flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-white shadow-[0_10px_22px_rgba(15,23,42,0.22)] transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-ds-card disabled:text-ds-faint disabled:shadow-none dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200 dark:disabled:bg-ds-card dark:disabled:text-ds-faint"
+                aria-label={primaryActionLabel}
+                title={primaryActionLabel}
+              >
+                <Send className="h-4 w-4" strokeWidth={2.2} />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -697,12 +1253,21 @@ export function FloatingComposer({
             <GitBranchPicker workspaceRoot={effectiveWorkspaceRoot} />
             {showThreadUsageFooter ? (
               <div
-                className="ds-composer-usage ds-no-drag inline-flex h-8 max-w-full min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-ds-border-muted bg-ds-card/72 px-2.5 text-[12.5px] font-medium text-ds-muted shadow-sm"
+                className="ds-composer-usage ds-no-drag inline-flex min-h-8 max-w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 overflow-visible rounded-lg border border-ds-border-muted bg-ds-card/72 px-2.5 py-1 text-[12.5px] font-medium leading-5 text-ds-muted shadow-sm"
                 title={
                   threadUsage
-                    ? t('sessionUsageCacheTitle', {
+                    ? t('sessionUsageDetailsTitle', {
+                        tokens: formatCompactNumber(threadUsage.totalTokens),
+                        cost: formatCost(threadUsage.costUsd, i18n.language, threadUsage.costCny),
+                        saved: formatCost(
+                          threadUsage.tokenEconomySavingsUsd,
+                          i18n.language,
+                          threadUsage.tokenEconomySavingsCny
+                        ),
+                        cache: formatPercent(threadUsage.cacheHitRate),
                         cached: formatCompactNumber(threadUsage.cachedTokens),
-                        miss: formatCompactNumber(threadUsage.cacheMissTokens)
+                        miss: formatCompactNumber(threadUsage.cacheMissTokens),
+                        turns: threadUsage.turns
                       })
                     : t('sessionUsageUnavailable')
                 }
@@ -710,23 +1275,44 @@ export function FloatingComposer({
                 <BarChart3 className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.9} />
                 {threadUsage ? (
                   <>
-                    <span className="ds-composer-usage-tokens shrink-0 tabular-nums">
+                    <span className="ds-composer-usage-tokens shrink-0 truncate tabular-nums">
                       {t('sessionUsageTokens', {
                         tokens: formatCompactNumber(threadUsage.totalTokens)
                       })}
                     </span>
                     <span className="ds-composer-usage-cost-separator text-ds-faint">·</span>
-                    <span className="ds-composer-usage-cost shrink-0 tabular-nums">
-                      {t('sessionUsageCost', { cost: formatCost(threadUsage.costUsd) })}
+                    <span className="ds-composer-usage-cost shrink-0 truncate tabular-nums">
+                      {t('sessionUsageCost', {
+                        cost: formatCost(threadUsage.costUsd, i18n.language, threadUsage.costCny)
+                      })}
                     </span>
+                    {threadUsage.tokenEconomySavingsTokens > 0 ? (
+                      <>
+                        <span className="ds-composer-usage-context-savings-separator text-ds-faint">·</span>
+                        <span
+                          className="ds-composer-usage-context-savings shrink-0 tabular-nums text-emerald-700 dark:text-emerald-300"
+                          title={t('sessionUsageContextSavingsTitle', {
+                            tokens: formatCompactNumber(threadUsage.tokenEconomySavingsTokens)
+                          })}
+                        >
+                          {t('sessionUsageContextSavings', {
+                            cost: formatCost(
+                              threadUsage.tokenEconomySavingsUsd,
+                              i18n.language,
+                              threadUsage.tokenEconomySavingsCny
+                            )
+                          })}
+                        </span>
+                      </>
+                    ) : null}
                     <span className="ds-composer-usage-cache-separator text-ds-faint">·</span>
-                    <span className="ds-composer-usage-cache shrink-0 tabular-nums">
+                    <span className="ds-composer-usage-cache shrink-0 truncate tabular-nums">
                       {t('sessionUsageCache', {
                         cache: formatPercent(threadUsage.cacheHitRate)
                       })}
                     </span>
-                    <span className="ds-composer-usage-turns-separator hidden text-ds-faint sm:inline">·</span>
-                    <span className="ds-composer-usage-turns hidden shrink-0 tabular-nums sm:inline">
+                    <span className="ds-composer-usage-turns-separator text-ds-faint">·</span>
+                    <span className="ds-composer-usage-turns shrink-0 truncate tabular-nums">
                       {t('sessionUsageTurns', { turns: threadUsage.turns })}
                     </span>
                   </>

@@ -1,0 +1,511 @@
+import { describe, expect, it } from 'vitest'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import {
+  FloatingComposer,
+  formatGoalElapsedSeconds,
+  imageFilesFromTransfer,
+  imageTransferHasImages,
+  parseCompactCommand,
+  parseGoalCommand,
+  parseReviewCommand
+} from './FloatingComposer'
+import {
+  FloatingComposerModelPicker,
+  calculateFloatingMenuPlacement,
+  composerReasoningEffortRequestValue
+} from './FloatingComposerModelPicker'
+import { getGoalPanelDraftObjective } from './floating-composer-commands'
+import { useChatStore } from '../../store/chat-store'
+
+describe('FloatingComposer slash commands', () => {
+  it('parses compact command aliases', () => {
+    expect(parseCompactCommand('/compact')).toEqual({})
+    expect(parseCompactCommand('/compress')).toEqual({})
+    expect(parseCompactCommand('/summarize')).toEqual({})
+    expect(parseCompactCommand('/压缩')).toEqual({})
+    expect(parseCompactCommand('/压缩会话')).toEqual({})
+    expect(parseCompactCommand('/总结')).toEqual({})
+  })
+
+  it('parses compact reasons and ignores adjacent command names', () => {
+    expect(parseCompactCommand('/compact preparing for a long continuation')).toEqual({
+      reason: 'preparing for a long continuation'
+    })
+    expect(parseCompactCommand('/压缩会话 继续实现前整理上下文')).toEqual({
+      reason: '继续实现前整理上下文'
+    })
+    expect(parseCompactCommand('/compactness')).toBeNull()
+    expect(parseCompactCommand('please /compact')).toBeNull()
+  })
+
+  it('parses goal command controls and objectives', () => {
+    expect(parseGoalCommand('/goal')).toEqual({ action: 'menu' })
+    expect(parseGoalCommand('/goal pause')).toEqual({ action: 'pause' })
+    expect(parseGoalCommand('/goal resume')).toEqual({ action: 'resume' })
+    expect(parseGoalCommand('/goal clear')).toEqual({ action: 'clear' })
+    expect(parseGoalCommand('/goal ship the feature')).toEqual({
+      action: 'set',
+      objective: 'ship the feature'
+    })
+    expect(parseGoalCommand('/goalkeeper')).toBe(false)
+  })
+
+  it('parses review command targets', () => {
+    expect(parseReviewCommand('/review')).toEqual({ kind: 'uncommittedChanges' })
+    expect(parseReviewCommand('/review base main')).toEqual({ kind: 'baseBranch', branch: 'main' })
+    expect(parseReviewCommand('/review branch release/1.2')).toEqual({ kind: 'baseBranch', branch: 'release/1.2' })
+    expect(parseReviewCommand('/review commit abc123')).toEqual({ kind: 'commit', sha: 'abc123' })
+    expect(parseReviewCommand('/review focus on auth regressions')).toEqual({
+      kind: 'custom',
+      instructions: 'focus on auth regressions'
+    })
+    expect(parseReviewCommand('/reviewer')).toBe(false)
+  })
+
+  it('uses ordinary composer text as a goal draft only when the goal panel is open', () => {
+    expect(getGoalPanelDraftObjective('ship the goal UX', true)).toBe('ship the goal UX')
+    expect(getGoalPanelDraftObjective('  ship the goal UX  ', true)).toBe('ship the goal UX')
+    expect(getGoalPanelDraftObjective('ship the goal UX', false)).toBe('')
+    expect(getGoalPanelDraftObjective('/goal pause', true)).toBe('')
+    expect(getGoalPanelDraftObjective('/compact after this', true)).toBe('')
+  })
+})
+
+describe('FloatingComposer goal helpers', () => {
+  it('formats elapsed goal time compactly', () => {
+    expect(formatGoalElapsedSeconds(3)).toBe('3s')
+    expect(formatGoalElapsedSeconds(60)).toBe('1m')
+    expect(formatGoalElapsedSeconds(125)).toBe('2m 5s')
+    expect(formatGoalElapsedSeconds(3720)).toBe('1h 2m')
+  })
+})
+
+describe('FloatingComposer model controls', () => {
+  it('maps the low reasoning chip to disabled thinking for faster turns', () => {
+    expect(composerReasoningEffortRequestValue('low')).toBe('off')
+    expect(composerReasoningEffortRequestValue('max')).toBe('max')
+  })
+
+  it('anchors the model menu to the trigger using the rendered menu height', () => {
+    const placement = calculateFloatingMenuPlacement({
+      anchorRect: { top: 780, right: 920, bottom: 816 },
+      menuHeight: 140,
+      viewportHeight: 900,
+      viewportWidth: 1000
+    })
+
+    expect(placement.left).toBe(636)
+    expect(placement.top).toBe(632)
+  })
+
+  it('keeps the model menu anchored when the app UI is zoomed', () => {
+    const placement = calculateFloatingMenuPlacement({
+      anchorRect: { top: 624, right: 736, bottom: 652.8 },
+      menuHeight: 140,
+      viewportHeight: 720,
+      viewportWidth: 800,
+      coordinateScale: 0.8
+    })
+
+    expect(placement.left).toBe(636)
+    expect(placement.top).toBe(632)
+  })
+
+  it('keeps the reasoning strength visible in the model control', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposerModelPicker, {
+        compact: false,
+        mode: 'select',
+        composerModel: 'auto',
+        composerPickList: ['auto', 'deepseek-v4-pro'],
+        composerReasoningEffort: 'high',
+        canChangeModel: true,
+        onComposerModelChange: () => undefined,
+        onComposerReasoningEffortChange: () => undefined
+      })
+    )
+
+    expect(html).toContain('Auto')
+    expect(html).toContain('High')
+  })
+})
+
+describe('FloatingComposer image transfer helpers', () => {
+  it('extracts image files from clipboard or drop payloads', () => {
+    const screenshot = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' })
+    const pastedWebp = new File([new Uint8Array([4])], '', { type: 'image/webp' })
+    const notes = new File(['hello'], 'notes.txt', { type: 'text/plain' })
+    const source = {
+      items: {
+        length: 3,
+        0: { kind: 'file', type: 'image/webp', getAsFile: () => pastedWebp },
+        1: { kind: 'file', type: 'text/plain', getAsFile: () => notes },
+        2: { kind: 'string', type: 'text/plain', getAsFile: () => null }
+      },
+      files: {
+        length: 2,
+        0: screenshot,
+        1: notes
+      }
+    }
+
+    expect(imageFilesFromTransfer(source)).toEqual([pastedWebp, screenshot])
+    expect(imageTransferHasImages(source)).toBe(true)
+  })
+
+  it('deduplicates files exposed through both transfer item and file lists', () => {
+    const screenshot = new File([new Uint8Array([1])], 'shot.png', { type: 'image/png' })
+    const source = {
+      items: {
+        length: 1,
+        0: { kind: 'file', type: 'image/png', getAsFile: () => screenshot }
+      },
+      files: {
+        length: 1,
+        0: screenshot
+      }
+    }
+
+    expect(imageFilesFromTransfer(source)).toEqual([screenshot])
+  })
+
+  it('keeps clipboard item MIME hints when pasted image files omit their own type', () => {
+    const screenshot = new File([new Uint8Array([1])], 'shot', { type: '' })
+    const source = {
+      items: {
+        length: 1,
+        0: { kind: 'file', type: 'image/png', getAsFile: () => screenshot }
+      },
+      files: {
+        length: 0
+      }
+    }
+
+    const [file] = imageFilesFromTransfer(source)
+
+    expect(file).toBeInstanceOf(File)
+    expect(file?.type).toBe('image/png')
+    expect(file?.name).toBe('shot')
+    expect(imageTransferHasImages(source)).toBe(true)
+  })
+})
+
+describe('FloatingComposer capability controls', () => {
+  it('enables goal setup before a thread exists when a workspace is available', () => {
+    useChatStore.setState({
+      activeThreadId: null,
+      activeThreadGoal: null,
+      route: 'chat',
+      workspaceRoot: ''
+    })
+
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: '/goal',
+        setInput: () => undefined,
+        mode: 'agent',
+        setMode: () => undefined,
+        busy: false,
+        runtimeReady: true,
+        hasActiveThread: false,
+        workspaceRootOverride: '/workspace/deepseek-gui',
+        composerModel: '',
+        composerPickList: [],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        attachmentUploadEnabled: false,
+        webAccessAvailable: false
+      })
+    )
+
+    const goalButton = html.match(/<button[^>]*>[\s\S]*?\/goal[\s\S]*?<\/button>/)?.[0] ?? ''
+    expect(goalButton).toContain('/goal')
+    expect(goalButton).not.toContain('disabled=""')
+  })
+
+  it('enables plan mode before a thread exists when a workspace is available', () => {
+    useChatStore.setState({
+      activeThreadId: null,
+      activeThreadGoal: null,
+      route: 'chat',
+      workspaceRoot: ''
+    })
+
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: '/plan',
+        setInput: () => undefined,
+        mode: 'agent',
+        setMode: () => undefined,
+        busy: false,
+        runtimeReady: true,
+        hasActiveThread: false,
+        workspaceRootOverride: '/workspace/deepseek-gui',
+        composerModel: '',
+        composerPickList: [],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        onPlanCommand: () => undefined,
+        attachmentUploadEnabled: false,
+        webAccessAvailable: false
+      })
+    )
+
+    const planButton = html.match(/<button[^>]*>[\s\S]*?\/plan[\s\S]*?<\/button>/)?.[0] ?? ''
+    expect(planButton).toContain('/plan')
+    expect(planButton).not.toContain('disabled=""')
+  })
+
+  it('enables local Claw input when a WeChat channel is already mapped to a local thread', () => {
+    useChatStore.setState({
+      activeThreadId: 'thr_weixin',
+      activeThreadGoal: null,
+      route: 'claw',
+      workspaceRoot: '',
+      activeClawChannelId: 'channel_weixin',
+      clawChannels: [{
+        id: 'channel_weixin',
+        provider: 'weixin',
+        label: 'weixin agent',
+        enabled: true,
+        model: 'auto',
+        threadId: 'thr_weixin',
+        workspaceRoot: '',
+        agentProfile: {
+          name: '',
+          description: '',
+          identity: '',
+          personality: '',
+          userContext: '',
+          replyRules: ''
+        },
+        platformCredential: {
+          kind: 'weixin',
+          accountId: 'wx_account',
+          sessionKey: 'wx_session',
+          createdAt: '2026-06-02T00:00:00.000Z'
+        },
+        conversations: [],
+        createdAt: '2026-06-02T00:00:00.000Z',
+        updatedAt: '2026-06-02T00:00:00.000Z'
+      }]
+    })
+
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: '',
+        setInput: () => undefined,
+        mode: 'agent',
+        setMode: () => undefined,
+        busy: false,
+        runtimeReady: true,
+        hasActiveThread: true,
+        composerModel: 'auto',
+        composerPickList: ['auto'],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        attachmentUploadEnabled: false,
+        webAccessAvailable: false
+      })
+    )
+
+    const textarea = html.match(/<textarea[^>]*>/)?.[0] ?? ''
+    expect(textarea).not.toContain('disabled=""')
+    expect(textarea).not.toContain('先去飞书')
+  })
+
+  it('hides image upload when attachment upload is unavailable', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: 'hello',
+        setInput: () => undefined,
+        mode: 'agent',
+        setMode: () => undefined,
+        busy: false,
+        runtimeReady: true,
+        hasActiveThread: true,
+        composerModel: '',
+        composerPickList: [],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        attachmentUploadEnabled: false,
+        webAccessAvailable: false
+      })
+    )
+    expect(html).not.toContain('Attach image')
+    expect(html).not.toContain('Image input is unavailable')
+  })
+
+  it('renders enabled image attachment state for Kun image send smoke', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: 'describe this',
+        setInput: () => undefined,
+        mode: 'agent',
+        setMode: () => undefined,
+        busy: false,
+        runtimeReady: true,
+        hasActiveThread: true,
+        composerModel: '',
+        composerPickList: [],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        attachments: [{ id: 'att_1', name: 'shot.png', mimeType: 'image/png' }],
+        attachmentUploadEnabled: true,
+        webAccessAvailable: true,
+        onRemoveAttachment: () => undefined
+      })
+    )
+    expect(html).toContain('More actions')
+    expect(html).toContain('Attach image')
+    expect(html).toContain('shot.png')
+  })
+
+  it('keeps the busy composer toolbar focused on stop and model text', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: 'hello',
+        setInput: () => undefined,
+        mode: 'agent',
+        setMode: () => undefined,
+        busy: true,
+        runtimeReady: true,
+        hasActiveThread: true,
+        composerModel: 'deepseek-v4-pro',
+        composerPickList: ['deepseek-v4-pro'],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        attachmentUploadEnabled: false,
+        webAccessAvailable: false
+      })
+    )
+
+    expect(html).toContain('deepseek-v4-pro')
+    expect(html).toContain('Stop')
+    expect(html).not.toContain('Stop and discard')
+    expect(html).not.toContain('lucide-trash-2')
+    expect(html).not.toContain('lucide-zap')
+    expect(html).not.toContain('Default (thread)')
+  })
+
+  it('renders the model control chip without an empty default option', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposerModelPicker, {
+        compact: false,
+        mode: 'select',
+        composerModel: 'deepseek-v4-pro',
+        composerPickList: ['auto', 'deepseek-v4-flash', 'deepseek-v4-pro'],
+        canChangeModel: true,
+        composerReasoningEffort: 'max',
+        onComposerReasoningEffortChange: () => undefined,
+        onComposerModelChange: () => undefined
+      })
+    )
+
+    expect(html).toContain('deepseek-v4-pro')
+    expect(html).toContain('Ultra')
+    expect(html).toContain('Model and reasoning settings')
+    expect(html).not.toContain('>Auto<')
+    expect(html).not.toContain('<option value=""></option>')
+    expect(html).not.toContain('Default (thread)')
+  })
+
+  it('renders compact combobox controls as a picker button with model and reasoning labels', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposerModelPicker, {
+        compact: true,
+        mode: 'combobox',
+        composerModel: 'deepseek-v4-flash',
+        composerPickList: ['auto', 'deepseek-v4-flash', 'deepseek-v4-pro'],
+        canChangeModel: true,
+        composerReasoningEffort: 'high',
+        onComposerReasoningEffortChange: () => undefined,
+        onComposerModelChange: () => undefined
+      })
+    )
+
+    expect(html).toContain('deepseek-v4-flash')
+    expect(html).toContain('High')
+    expect(html).toContain('Model and reasoning settings')
+    expect(html).toContain('aria-haspopup="menu"')
+    expect(html).not.toContain('<input')
+  })
+
+  it('shows a plan badge in the input toolbar when plan mode is enabled', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: 'plan this',
+        setInput: () => undefined,
+        mode: 'plan',
+        setMode: () => undefined,
+        busy: false,
+        runtimeReady: true,
+        hasActiveThread: true,
+        composerModel: '',
+        composerPickList: [],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        onPlanCommand: () => undefined,
+        attachmentUploadEnabled: false,
+        webAccessAvailable: false
+      })
+    )
+    expect(html).toContain('title="Plan"')
+    expect(html).toContain('>Plan</span>')
+  })
+
+  it('renders image attachment thumbnails when a local preview is available', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: '',
+        setInput: () => undefined,
+        mode: 'agent',
+        setMode: () => undefined,
+        busy: false,
+        runtimeReady: true,
+        hasActiveThread: true,
+        composerModel: '',
+        composerPickList: [],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        attachments: [{
+          id: 'att_1',
+          name: 'shot.png',
+          mimeType: 'image/png',
+          previewUrl: 'blob:shot-preview'
+        }],
+        attachmentUploadEnabled: true,
+        webAccessAvailable: true,
+        onRemoveAttachment: () => undefined
+      })
+    )
+
+    expect(html).toContain('src="blob:shot-preview"')
+    expect(html).toContain('alt="shot.png"')
+  })
+})

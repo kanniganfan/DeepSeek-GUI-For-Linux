@@ -1,4 +1,5 @@
 import type { NormalizedThread } from '../agent/types'
+import { browserStorage, type BrowserStorageLike } from './browser-storage'
 
 export type ThreadForkRecord = {
   parentThreadId: string
@@ -13,23 +14,12 @@ export type ThreadForkRegistry = {
   forks: Record<string, ThreadForkRecord>
 }
 
-type StorageLike = {
-  getItem: (key: string) => string | null
-  setItem: (key: string, value: string) => void
-}
+export const MAX_THREAD_FORK_REGISTRY_ENTRIES = 500
 
 const THREAD_FORK_REGISTRY_KEY = 'deepseekgui.threadForks.v1'
 
 export function emptyThreadForkRegistry(): ThreadForkRegistry {
   return { version: 1, forks: {} }
-}
-
-function browserStorage(): StorageLike | null {
-  try {
-    return globalThis.localStorage ?? null
-  } catch {
-    return null
-  }
 }
 
 function normalizeThreadId(value: unknown): string {
@@ -45,6 +35,10 @@ function normalizeOptionalCount(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
     : undefined
+}
+
+function trimForkRegistryEntries(forks: ThreadForkRegistry['forks']): ThreadForkRegistry['forks'] {
+  return Object.fromEntries(Object.entries(forks).slice(-MAX_THREAD_FORK_REGISTRY_ENTRIES))
 }
 
 export function normalizeThreadForkRegistry(raw: unknown): ThreadForkRegistry {
@@ -63,6 +57,7 @@ export function normalizeThreadForkRegistry(raw: unknown): ThreadForkRegistry {
     const createdAt = normalizeOptionalString(record.createdAt)
     const forkedFromMessageCount = normalizeOptionalCount(record.forkedFromMessageCount)
     const forkedFromTurnCount = normalizeOptionalCount(record.forkedFromTurnCount)
+    delete forks[threadId]
     forks[threadId] = {
       parentThreadId,
       ...(parentTitle ? { parentTitle } : {}),
@@ -72,10 +67,10 @@ export function normalizeThreadForkRegistry(raw: unknown): ThreadForkRegistry {
     }
   }
 
-  return { version: 1, forks }
+  return { version: 1, forks: trimForkRegistryEntries(forks) }
 }
 
-export function readThreadForkRegistry(storage: StorageLike | null = browserStorage()): ThreadForkRegistry {
+export function readThreadForkRegistry(storage: BrowserStorageLike | null = browserStorage()): ThreadForkRegistry {
   if (!storage) return emptyThreadForkRegistry()
   try {
     const raw = storage.getItem(THREAD_FORK_REGISTRY_KEY)
@@ -87,7 +82,7 @@ export function readThreadForkRegistry(storage: StorageLike | null = browserStor
 
 export function saveThreadForkRegistry(
   registry: ThreadForkRegistry,
-  storage: StorageLike | null = browserStorage()
+  storage: BrowserStorageLike | null = browserStorage()
 ): void {
   if (!storage) return
   try {
@@ -120,10 +115,12 @@ export function markThreadFork(
     ...(forkedFromMessageCount !== undefined ? { forkedFromMessageCount } : {}),
     ...(forkedFromTurnCount !== undefined ? { forkedFromTurnCount } : {})
   }
+  const forks = { ...registry.forks }
+  delete forks[id]
   return normalizeThreadForkRegistry({
     ...registry,
     forks: {
-      ...registry.forks,
+      ...forks,
       [id]: record
     }
   })

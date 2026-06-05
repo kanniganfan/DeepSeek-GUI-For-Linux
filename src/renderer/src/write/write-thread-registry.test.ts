@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { NormalizedThread } from '../agent/types'
 import {
+  MAX_WRITE_THREAD_IDS_PER_WORKSPACE,
+  MAX_WRITE_THREAD_REGISTRY_WORKSPACES,
   WRITE_ASSISTANT_THREAD_TITLE,
   activeWriteThreadForWorkspace,
   emptyWriteThreadRegistry,
@@ -10,7 +12,8 @@ import {
   markWriteThread,
   pruneWriteThreadRegistry,
   readWriteThreadRegistry,
-  saveWriteThreadRegistry
+  saveWriteThreadRegistry,
+  writeWorkspaceForThreadId
 } from './write-thread-registry'
 
 class MemoryStorage {
@@ -53,6 +56,41 @@ describe('write-thread-registry', () => {
 
     expect(second.workspaces['/Users/zxy/workspace'].activeThreadId).toBe('thread-2')
     expect(second.workspaces['/Users/zxy/workspace'].threadIds).toEqual(['thread-2', 'thread-1'])
+  })
+
+  it('caps remembered write thread ids per workspace', () => {
+    let registry = emptyWriteThreadRegistry()
+    for (let index = 0; index < MAX_WRITE_THREAD_IDS_PER_WORKSPACE + 5; index += 1) {
+      registry = markWriteThread('/Users/zxy/write', `thread-${index}`, registry)
+    }
+
+    const record = registry.workspaces['/Users/zxy/write']
+    expect(record.activeThreadId).toBe(`thread-${MAX_WRITE_THREAD_IDS_PER_WORKSPACE + 4}`)
+    expect(record.threadIds).toHaveLength(MAX_WRITE_THREAD_IDS_PER_WORKSPACE)
+    expect(record.threadIds).not.toContain('thread-0')
+    expect(record.threadIds).not.toContain('thread-4')
+    expect(record.threadIds).toContain('thread-5')
+  })
+
+  it('caps remembered write workspaces while keeping recently marked workspaces', () => {
+    let registry = emptyWriteThreadRegistry()
+    for (let index = 0; index < MAX_WRITE_THREAD_REGISTRY_WORKSPACES; index += 1) {
+      registry = markWriteThread(`/Users/zxy/write-${index}`, `thread-${index}`, registry)
+    }
+
+    registry = markWriteThread('/Users/zxy/write-0', 'thread-refreshed', registry)
+    registry = markWriteThread(
+      `/Users/zxy/write-${MAX_WRITE_THREAD_REGISTRY_WORKSPACES}`,
+      'thread-new',
+      registry
+    )
+
+    expect(Object.keys(registry.workspaces)).toHaveLength(MAX_WRITE_THREAD_REGISTRY_WORKSPACES)
+    expect(registry.workspaces['/Users/zxy/write-1']).toBeUndefined()
+    expect(registry.workspaces['/Users/zxy/write-0']?.activeThreadId).toBe('thread-refreshed')
+    expect(registry.workspaces[`/Users/zxy/write-${MAX_WRITE_THREAD_REGISTRY_WORKSPACES}`]?.activeThreadId).toBe(
+      'thread-new'
+    )
   })
 
   it('prunes missing runtime threads and forgets deleted threads', () => {
@@ -113,6 +151,29 @@ describe('write-thread-registry', () => {
         registry
       )?.id
     ).toBe('legacy-write-thread')
+  })
+
+  it('hydrates Reasonix write-context threads even when the session list reports the default workspace', () => {
+    const leaked = {
+      ...thread('reasonix-write-thread', '/Users/zxy/.deepseekgui/default_workspace'),
+      title: '[写作上下文] 交互限制：当前 GUI 无法提交 request_user_input'
+    }
+
+    const registry = hydrateWriteThreadRegistry(
+      [leaked],
+      ['/Users/zxy/.deepseekgui/write_workspace'],
+      emptyWriteThreadRegistry()
+    )
+
+    expect(isWriteThreadId('reasonix-write-thread', registry)).toBe(true)
+    expect(writeWorkspaceForThreadId('reasonix-write-thread', registry)).toBe('/Users/zxy/.deepseekgui/write_workspace')
+    expect(
+      activeWriteThreadForWorkspace(
+        '/Users/zxy/.deepseekgui/write_workspace',
+        [leaked],
+        registry
+      )?.id
+    ).toBe('reasonix-write-thread')
   })
 
   it('preserves the active write thread while adding newly inferred thread ids', () => {

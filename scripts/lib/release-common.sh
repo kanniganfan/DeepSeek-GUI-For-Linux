@@ -4,6 +4,7 @@
 red()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 green(){ printf '\033[32m%s\033[0m\n' "$*"; }
 cyan() { printf '\033[36m%s\033[0m\n' "$*" >&2; }
+yellow(){ printf '\033[33m%s\033[0m\n' "$*" >&2; }
 die()  { red "[ERROR] $*"; exit 1; }
 
 release_validate_semver() {
@@ -252,7 +253,7 @@ release_write_notes_file() {
     else
       echo "- macOS: 未签名构建"
     fi
-    echo "- 平台: macOS (arm64 + Intel x64) · Windows (\`release-win.ps1\` / \`release-win.sh\`)"
+    echo "- 平台: ${RELEASE_PLATFORMS_NOTE:-macOS (arm64 + Intel x64) · Windows (\`release-win.ps1\` / \`release-win.sh\`)}"
   } >>"${dest}"
 }
 

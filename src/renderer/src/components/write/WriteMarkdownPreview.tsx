@@ -371,7 +371,7 @@ function WriteMarkdownPreviewContent({ content, isMarkdown, filePath }: Props): 
               onClick={(event) => {
                 if (!href) return
                 event.preventDefault()
-                void window.dsGui?.openExternal?.(href)
+                void window.dsGui?.openExternal?.(href)?.catch(() => undefined)
               }}
             >
               {children}

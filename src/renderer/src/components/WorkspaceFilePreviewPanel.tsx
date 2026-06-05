@@ -190,7 +190,7 @@ export function WorkspaceFilePreviewPanel({
         void window.dsGui?.logError?.('editor-open', 'Failed to open previewed file', {
           message: next.message,
           target
-        })
+        })?.catch(() => undefined)
       }
     })
   }
@@ -198,10 +198,14 @@ export function WorkspaceFilePreviewPanel({
   const copyPath = async (): Promise<void> => {
     const path = result?.ok ? result.path : target?.path
     if (!path || !navigator?.clipboard?.writeText) return
-    await navigator.clipboard.writeText(path)
-    setCopied(true)
-    if (copyResetRef.current !== null) window.clearTimeout(copyResetRef.current)
-    copyResetRef.current = window.setTimeout(() => setCopied(false), COPY_RESET_MS)
+    try {
+      await navigator.clipboard.writeText(path)
+      setCopied(true)
+      if (copyResetRef.current !== null) window.clearTimeout(copyResetRef.current)
+      copyResetRef.current = window.setTimeout(() => setCopied(false), COPY_RESET_MS)
+    } catch {
+      setCopied(false)
+    }
   }
 
   return (

@@ -2,16 +2,22 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import {
-  DEFAULT_DEEPSEEK_BASE_URL,
+  applyKunRuntimePatch,
+  kunSettingsEnvelope,
   DEFAULT_GUI_UPDATE_CHANNEL,
   DEFAULT_WRITE_WORKSPACE_ROOT,
   defaultClawSettings,
-  defaultLocalHttpRuntimeSettings,
+  defaultKunRuntimeSettings,
+  defaultModelProviderSettings,
+  defaultScheduleSettings,
+  getKunRuntimeSettings,
+  mergeKunRuntimeSettings,
+  mergeModelProviderSettings,
   defaultWriteSettings,
   mergeClawSettings,
+  mergeScheduleSettings,
   mergeWriteSettings,
   migrateLegacyAppSettings,
-  normalizeAgentProviderId,
   normalizeAppSettings,
   type AppSettingsPatch,
   type AppSettingsV1,
@@ -33,7 +39,7 @@ This is your default writing workspace.
 - Switch between source, live, split, and preview modes from the top bar.
 `
 
-function expandHomePath(raw: string | null | undefined): string {
+export function expandHomePath(raw: string | null | undefined): string {
   const value = typeof raw === 'string' ? raw.trim() : ''
   if (!value) return ''
   if (value === '~') return homedir()
@@ -61,8 +67,18 @@ function sanitizePathSegment(raw: string | null | undefined, fallback: string): 
 }
 
 function defaultClawChannelWorkspaceRoot(channel: ClawImChannelV1): string {
-  const domain = sanitizePathSegment(channel.platformCredential?.domain, 'feishu')
-  const workspaceId = sanitizePathSegment(channel.platformCredential?.appId || channel.id, 'channel')
+  const credential = channel.platformCredential
+  const domain = credential?.kind === 'feishu'
+    ? credential.domain
+    : credential?.kind === 'weixin'
+      ? 'weixin'
+      : channel.provider
+  const credentialId = credential?.kind === 'feishu'
+    ? credential.appId
+    : credential?.kind === 'weixin'
+      ? credential.accountId
+      : ''
+  const workspaceId = sanitizePathSegment(credentialId || channel.id, 'channel')
   return join(DEFAULT_CLAW_CHANNELS_ROOT, channel.provider, domain, workspaceId)
 }
 
@@ -122,9 +138,14 @@ function normalizeStoredSettings(settings: AppSettingsV1): AppSettingsV1 {
   }
 }
 
-async function ensureWorkspaceRootExists(workspaceRoot: string): Promise<void> {
-  if (workspaceRoot !== DEFAULT_WORKSPACE_ROOT) return
-  await mkdir(workspaceRoot, { recursive: true })
+function serializeSettingsForDisk(settings: AppSettingsV1): string {
+  return JSON.stringify(normalizeStoredSettings(settings), null, 2)
+}
+
+export async function ensureWorkspaceRootExists(workspaceRoot: string): Promise<string> {
+  const normalized = normalizeWorkspaceRoot(workspaceRoot)
+  await mkdir(normalized, { recursive: true })
+  return normalized
 }
 
 async function ensureWriteWorkspaceRootsExist(settings: AppSettingsV1): Promise<void> {
@@ -159,9 +180,9 @@ const defaultSettings = (): AppSettingsV1 => ({
   locale: 'en',
   theme: 'system',
   uiFontScale: 'small',
-  agentProvider: 'codewhale',
+  provider: defaultModelProviderSettings(),
   agents: {
-    codewhale: defaultLocalHttpRuntimeSettings()
+    kun: defaultKunRuntimeSettings()
   },
   workspaceRoot: DEFAULT_WORKSPACE_ROOT,
   log: {
@@ -175,7 +196,8 @@ const defaultSettings = (): AppSettingsV1 => ({
     channel: DEFAULT_GUI_UPDATE_CHANNEL
   },
   write: defaultWriteSettings(),
-  claw: defaultClawSettings()
+  claw: defaultClawSettings(),
+  schedule: defaultScheduleSettings()
 })
 
 function buildMergedSettings(parsed: Partial<AppSettingsV1>): AppSettingsV1 {
@@ -184,18 +206,16 @@ function buildMergedSettings(parsed: Partial<AppSettingsV1>): AppSettingsV1 {
   return {
     ...defaults,
     ...migrated,
-    agents: {
-      codewhale: {
-        ...defaults.agents.codewhale,
-        ...(migrated.agents?.codewhale ?? {})
-      }
-    },
+    provider: mergeModelProviderSettings(defaults.provider, migrated.provider),
+    agents: kunSettingsEnvelope(
+      mergeKunRuntimeSettings(getKunRuntimeSettings(defaults), migrated.agents?.kun)
+    ),
     log: { ...defaults.log, ...migrated.log },
     notifications: { ...defaults.notifications, ...migrated.notifications },
     write: mergeWriteSettings(defaults.write, migrated.write),
     claw: mergeClawSettings(defaults.claw, migrated.claw),
-    guiUpdate: { ...defaults.guiUpdate, ...migrated.guiUpdate },
-    agentProvider: normalizeAgentProviderId(migrated.agentProvider ?? defaults.agentProvider)
+    schedule: mergeScheduleSettings(defaults.schedule, migrated.schedule),
+    guiUpdate: { ...defaults.guiUpdate, ...migrated.guiUpdate }
   }
 }
 
@@ -286,26 +306,22 @@ export class JsonSettingsStore {
     await ensureClawChannelWorkspaceRootsExist(normalized)
     this.cache = normalized
     await mkdir(dirname(this.path), { recursive: true })
-    await writeFile(this.path, JSON.stringify(normalized, null, 2), 'utf8')
+    await writeFile(this.path, serializeSettingsForDisk(normalized), 'utf8')
   }
 
   async patch(partial: AppSettingsPatch): Promise<AppSettingsV1> {
     const cur = await this.load()
+    const { agents: agentsPatch, provider: providerPatch, ...restPatch } = partial
     const next = normalizeStoredSettings({
-      ...cur,
-      ...partial,
-      agents: {
-        codewhale: {
-          ...cur.agents.codewhale,
-          ...(partial.agents?.codewhale ?? {})
-        }
-      },
+      ...applyKunRuntimePatch(cur, agentsPatch?.kun),
+      ...restPatch,
+      provider: mergeModelProviderSettings(cur.provider, providerPatch),
       log: { ...cur.log, ...(partial.log ?? {}) },
       notifications: { ...cur.notifications, ...(partial.notifications ?? {}) },
       write: mergeWriteSettings(cur.write, partial.write),
       claw: mergeClawSettings(cur.claw, partial.claw),
-      guiUpdate: { ...cur.guiUpdate, ...(partial.guiUpdate ?? {}) },
-      agentProvider: partial.agentProvider ?? cur.agentProvider
+      schedule: mergeScheduleSettings(cur.schedule, partial.schedule),
+      guiUpdate: { ...cur.guiUpdate, ...(partial.guiUpdate ?? {}) }
     })
     await this.save(next)
     return next

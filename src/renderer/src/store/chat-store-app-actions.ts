@@ -1,5 +1,6 @@
 import type i18next from 'i18next'
 import type { AppSettingsV1 } from '@shared/app-settings'
+import { rendererRuntimeClient } from '../agent/runtime-client'
 import type { ChatState, ChatStoreGet, ChatStoreSet, InitialSetupMode, PluginHostRoute, SettingsRouteSection } from './chat-store-types'
 
 type CreateAppActionsOptions = {
@@ -27,6 +28,7 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
   | 'openSettings'
   | 'openPlugins'
   | 'openClaw'
+  | 'openSchedule'
   | 'openInitialSetup'
   | 'closeInitialSetup'
   | 'selectInspectorItem'
@@ -62,6 +64,7 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
       const task = (async () => {
         const res = await window.dsGui.fetchUpstreamModels()
         const pick = mergeComposerPickList(res.ok, res.ok ? res.modelIds : [])
+        const groups = res.ok ? res.modelGroups ?? [] : []
         const allowed = new Set(pick)
         set((state) => {
           let model = state.composerModel
@@ -70,7 +73,7 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
           }
           if (model !== '' && !allowed.has(model)) model = ''
           if (model !== state.composerModel) persistComposerModel(model)
-          return { composerPickList: pick, composerModel: model }
+          return { composerPickList: pick, composerModel: model, composerModelGroups: groups }
         })
       })().finally(() => {
         setComposerModelLoadPromise(null)
@@ -103,6 +106,10 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
       void get().refreshClawChannels()
     },
 
+    openSchedule: () => {
+      set({ route: 'schedule' })
+    },
+
     openInitialSetup: (mode: InitialSetupMode = 'required') =>
       set({ initialSetupOpen: true, initialSetupMode: mode }),
 
@@ -116,18 +123,19 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
 
     reloadUiSettings: async () => {
       if (typeof window.dsGui === 'undefined') return
-      const settings = await window.dsGui.getSettings()
+      const settings = await rendererRuntimeClient.getSettings({ forceRefresh: true })
       const workspaceRoot = normalizeWorkspaceRoot(settings.workspaceRoot)
       applyTheme(settings.theme)
       applyUiFontScale(settings.uiFontScale)
       set({
-        providerId: settings.agentProvider,
         workspaceRoot,
         workspaceLabel: workspaceLabelFromPath(workspaceRoot),
         clawChannels: settings.claw.channels,
-        activeClawChannelId: settings.claw.channels.some((channel) => channel.id === get().activeClawChannelId)
+        activeClawChannelId: settings.claw.channels.some(
+          (channel) => channel.id === get().activeClawChannelId && channel.enabled
+        )
           ? get().activeClawChannelId
-          : settings.claw.channels[0]?.id ?? ''
+          : settings.claw.channels.find((channel) => channel.enabled)?.id ?? ''
       })
       await get().applyI18nFromSettings(settings.locale)
       if (get().runtimeConnection === 'ready') {

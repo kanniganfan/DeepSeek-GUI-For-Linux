@@ -53,7 +53,20 @@ export type WorkspaceFileWatchPayload = {
 export type WorkspaceClipboardImageSavePayload = {
   workspaceRoot: string
   currentFilePath: string
+  imageDirectory?: string
 }
+
+export type ClipboardImageReadResult =
+  | {
+      ok: true
+      name: string
+      mimeType: string
+      dataBase64: string
+      byteSize: number
+      width?: number
+      height?: number
+    }
+  | { ok: false; message: string }
 
 export type WorkspaceFileReadResult =
   | {

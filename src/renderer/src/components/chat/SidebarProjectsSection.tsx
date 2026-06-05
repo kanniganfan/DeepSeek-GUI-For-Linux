@@ -1,26 +1,35 @@
-import type { ReactElement } from 'react'
-import { useMemo, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent, ReactElement } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  Archive,
   ChevronDown,
   ChevronRight,
-  Archive,
   Folder,
+  FolderPlus,
   FolderOpen,
   GitFork,
-  LayoutGrid,
   Loader2,
-  MessageSquare,
+  PencilLine,
   Plus,
   RotateCcw,
   Search,
-  Trash2,
-  X
+  Trash2
 } from 'lucide-react'
 import type { NormalizedThread } from '../../agent/types'
 import { formatRelativeTime } from '../../lib/format-relative-time'
 import { workspaceLabelFromPath } from '../../lib/workspace-label'
-import { isClawWorkspacePath, isInternalTemporaryWorkspace, normalizeWorkspaceRoot } from '../../lib/workspace-path'
+import {
+  isClawWorkspacePath,
+  isInternalDeepSeekGuiWorkspace,
+  isInternalTemporaryWorkspace,
+  normalizeWorkspaceRoot
+} from '../../lib/workspace-path'
+import {
+  SidebarIconButton,
+  SidebarSearchField,
+  SidebarTreeRow
+} from '../sidebar/SidebarPrimitives'
 
 type SidebarProjectsSectionProps = {
   threads: NormalizedThread[]
@@ -30,6 +39,7 @@ type SidebarProjectsSectionProps = {
   searchQuery: string
   showArchived: boolean
   workspaceRoot: string
+  workspaceRoots: string[]
   busy: boolean
   watchTurnCompletion: Record<string, boolean>
   unreadThreadIds: Record<string, boolean>
@@ -38,11 +48,72 @@ type SidebarProjectsSectionProps = {
   onRemoveWorkspace: (workspacePath: string) => Promise<void>
   onCreateThreadInWorkspace: (workspacePath: string) => void
   onSelectThread: (threadId: string) => void
+  onRenameThread: (threadId: string, title: string) => Promise<void>
+  onArchiveThread: (threadId: string) => Promise<void>
   onDeleteThread: (threadId: string) => Promise<void>
   onRestoreThread: (threadId: string) => Promise<void>
   onSearchQueryChange: (query: string) => void
   onShowArchivedChange: (show: boolean) => void
   t: (k: string, opts?: Record<string, unknown>) => string
+}
+
+export type SidebarWorkspaceGroup = [workspacePath: string, threads: NormalizedThread[]]
+
+type ThreadContextMenuState = {
+  thread: NormalizedThread
+  x: number
+  y: number
+}
+
+export function buildSidebarWorkspaceGroups(options: {
+  threads: NormalizedThread[]
+  searchQuery: string
+  showArchived: boolean
+  workspaceRoot: string
+  workspaceRoots: string[]
+}): SidebarWorkspaceGroup[] {
+  const map = new Map<string, NormalizedThread[]>()
+  const selectedWorkspace = normalizeWorkspaceRoot(options.workspaceRoot)
+  const query = options.searchQuery.trim().toLowerCase()
+
+  for (const th of options.threads) {
+    if (isInternalTemporaryWorkspace(th.workspace)) continue
+    if (isInternalDeepSeekGuiWorkspace(th.workspace)) continue
+    if (isClawWorkspacePath(th.workspace)) continue
+    if ((th.archived === true) !== options.showArchived) continue
+    const key = normalizeWorkspaceRoot(th.workspace)
+    if (!key) continue
+    if (query) {
+      const haystack = [th.title, th.preview, key, workspaceLabelFromPath(key)]
+        .filter(Boolean)
+        .join('\n')
+        .toLowerCase()
+      if (!haystack.includes(query)) continue
+    }
+    const arr = map.get(key) ?? []
+    arr.push(th)
+    map.set(key, arr)
+  }
+
+  if (selectedWorkspace && !map.has(selectedWorkspace)) {
+    map.set(selectedWorkspace, [])
+  }
+  if (!query && !options.showArchived) {
+    for (const workspacePath of options.workspaceRoots) {
+      const key = normalizeWorkspaceRoot(workspacePath)
+      if (!key || map.has(key)) continue
+      if (isInternalTemporaryWorkspace(key)) continue
+      if (isInternalDeepSeekGuiWorkspace(key)) continue
+      if (isClawWorkspacePath(key)) continue
+      map.set(key, [])
+    }
+  }
+
+  return Array.from(map.entries()).sort(([a], [b]) => {
+    if (a === selectedWorkspace && b !== selectedWorkspace) return -1
+    if (b === selectedWorkspace && a !== selectedWorkspace) return 1
+    return a.localeCompare(b)
+  })
 }
 
 export function SidebarProjectsSection({
@@ -53,6 +124,7 @@ export function SidebarProjectsSection({
   searchQuery,
   showArchived,
   workspaceRoot,
+  workspaceRoots,
   busy,
   watchTurnCompletion,
   unreadThreadIds,
@@ -61,6 +133,8 @@ export function SidebarProjectsSection({
   onRemoveWorkspace,
   onCreateThreadInWorkspace,
   onSelectThread,
+  onRenameThread,
+  onArchiveThread,
   onDeleteThread,
   onRestoreThread,
   onSearchQueryChange,
@@ -70,49 +144,72 @@ export function SidebarProjectsSection({
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({})
   const [deletingThreadIds, setDeletingThreadIds] = useState<Record<string, boolean>>({})
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [threadContextMenu, setThreadContextMenu] = useState<ThreadContextMenuState | null>(null)
 
   const groups = useMemo(() => {
-    const map = new Map<string, NormalizedThread[]>()
-    const selectedWorkspace = normalizeWorkspaceRoot(workspaceRoot)
-    const query = searchQuery.trim().toLowerCase()
-
-    for (const th of threads) {
-      if (isInternalTemporaryWorkspace(th.workspace)) continue
-      if (isClawWorkspacePath(th.workspace)) continue
-      if ((th.archived === true) !== showArchived) continue
-      const key = normalizeWorkspaceRoot(th.workspace)
-      if (!key) continue
-      if (query) {
-        const haystack = [th.title, th.preview, key, workspaceLabelFromPath(key)]
-          .filter(Boolean)
-          .join('\n')
-          .toLowerCase()
-        if (!haystack.includes(query)) continue
-      }
-      const arr = map.get(key) ?? []
-      arr.push(th)
-      map.set(key, arr)
-    }
-
-    if (selectedWorkspace && !map.has(selectedWorkspace)) {
-      map.set(selectedWorkspace, [])
-    }
-
-    return Array.from(map.entries()).sort(([a], [b]) => {
-      if (a === selectedWorkspace && b !== selectedWorkspace) return -1
-      if (b === selectedWorkspace && a !== selectedWorkspace) return 1
-      return a.localeCompare(b)
+    return buildSidebarWorkspaceGroups({
+      threads,
+      searchQuery,
+      showArchived,
+      workspaceRoot,
+      workspaceRoots
     })
-  }, [searchQuery, showArchived, threads, workspaceRoot])
+  }, [searchQuery, showArchived, threads, workspaceRoot, workspaceRoots])
+
+  const searchVisible = searchOpen || searchQuery.trim().length > 0
+  const allGroupsCollapsed = groups.length > 0 && groups.every(([workspacePath]) => collapsed[workspacePath] === true)
+
+  useEffect(() => {
+    if (!threadContextMenu) return
+    const close = (): void => setThreadContextMenu(null)
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') close()
+    }
+    window.addEventListener('pointerdown', close)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('pointerdown', close)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [threadContextMenu])
+
+  const toggleAllGroups = (): void => {
+    if (groups.length === 0) return
+    if (allGroupsCollapsed) {
+      setCollapsed({})
+      return
+    }
+    setCollapsed(Object.fromEntries(groups.map(([workspacePath]) => [workspacePath, true])))
+  }
 
   const handleDeleteThread = async (thread: NormalizedThread): Promise<void> => {
+    const threadId = thread.id.trim()
+    if (!threadId || deletingThreadIds[threadId]) return
+    const confirmMessage = t('sidebarThreadDeleteConfirm', { title: thread.title })
+    if (!window.confirm(confirmMessage)) return
+    setDeletingThreadIds((prev) => ({ ...prev, [threadId]: true }))
+    try {
+      await onDeleteThread(threadId)
+    } finally {
+      setDeletingThreadIds((prev) => {
+        const next = { ...prev }
+        delete next[threadId]
+        return next
+      })
+    }
+  }
+
+  const handleArchiveThread = async (thread: NormalizedThread): Promise<void> => {
     const threadId = thread.id.trim()
     if (!threadId || deletingThreadIds[threadId]) return
     const confirmMessage = t('sidebarThreadArchiveConfirm', { title: thread.title })
     if (!window.confirm(confirmMessage)) return
     setDeletingThreadIds((prev) => ({ ...prev, [threadId]: true }))
     try {
-      await onDeleteThread(threadId)
+      await onArchiveThread(threadId)
     } finally {
       setDeletingThreadIds((prev) => {
         const next = { ...prev }
@@ -137,6 +234,36 @@ export function SidebarProjectsSection({
     }
   }
 
+  const handleRenameThread = async (thread: NormalizedThread): Promise<void> => {
+    const threadId = thread.id.trim()
+    if (!threadId || deletingThreadIds[threadId]) return
+    const nextTitle = window.prompt(t('sidebarThreadRenamePrompt'), thread.title)?.trim()
+    if (!nextTitle || nextTitle === thread.title) return
+    setDeletingThreadIds((prev) => ({ ...prev, [threadId]: true }))
+    try {
+      await onRenameThread(threadId, nextTitle)
+    } finally {
+      setDeletingThreadIds((prev) => {
+        const next = { ...prev }
+        delete next[threadId]
+        return next
+      })
+    }
+  }
+
+  const openThreadContextMenu = (
+    event: ReactMouseEvent<HTMLDivElement>,
+    thread: NormalizedThread
+  ): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    setThreadContextMenu({
+      thread,
+      x: Math.min(event.clientX, window.innerWidth - 180),
+      y: Math.min(event.clientY, window.innerHeight - 150)
+    })
+  }
+
   const handleRemoveWorkspace = async (workspacePath: string): Promise<void> => {
     const confirmMessage = t('sidebarWorkspaceRemoveConfirm', { path: workspacePath })
     if (!window.confirm(confirmMessage)) return
@@ -145,63 +272,63 @@ export function SidebarProjectsSection({
 
   return (
     <div className="ds-no-drag flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center justify-between px-2 pb-1 pt-0.5">
-        <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-ds-faint">
-          {t('sidebarProjects')}
-        </span>
-        <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            onClick={onPickWorkspace}
-            title={workspaceRoot ? t('changeWorkspace') : t('selectWorkspace')}
-            className="rounded-md p-1 text-ds-faint transition hover:bg-ds-hover/70 hover:text-ds-ink"
+      <div className="flex min-h-[38px] items-center justify-between px-2 pb-1.5 pt-3">
+        <button
+          type="button"
+          onClick={toggleAllGroups}
+          className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] text-ds-faint transition hover:bg-[var(--ds-sidebar-row-hover)] hover:text-ds-muted"
+          title={t('sidebarProjects')}
+          aria-label={t('sidebarProjects')}
+        >
+          <span className="truncate">{t('sidebarProjects')}</span>
+          {allGroupsCollapsed ? (
+            <ChevronRight className="h-3 w-3 shrink-0" strokeWidth={2} />
+          ) : (
+            <ChevronDown className="h-3 w-3 shrink-0" strokeWidth={2} />
+          )}
+        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <SidebarIconButton
+            onClick={() => setSearchOpen((open) => !open)}
+            active={searchVisible}
+            className="h-7 w-7"
+            title={t('sidebarSearchThreads')}
+            ariaLabel={t('sidebarSearchThreads')}
           >
-            <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-          </button>
+            <Search className="h-3.5 w-3.5" strokeWidth={1.85} />
+          </SidebarIconButton>
+          <SidebarIconButton
+            onClick={() => onShowArchivedChange(!showArchived)}
+            active={showArchived}
+            className="h-7 w-7"
+            title={showArchived ? t('sidebarShowActiveThreads') : t('sidebarShowArchivedThreads')}
+            ariaLabel={showArchived ? t('sidebarShowActiveThreads') : t('sidebarShowArchivedThreads')}
+          >
+            <Archive className="h-3.5 w-3.5" strokeWidth={1.85} />
+          </SidebarIconButton>
+          <SidebarIconButton
+            onClick={onPickWorkspace}
+            className="h-7 w-7"
+            title={workspaceRoot ? t('changeWorkspace') : t('selectWorkspace')}
+            ariaLabel={workspaceRoot ? t('changeWorkspace') : t('selectWorkspace')}
+          >
+            <FolderPlus className="h-3.5 w-3.5" strokeWidth={1.75} />
+          </SidebarIconButton>
         </div>
       </div>
 
-      <div className="mb-2 flex items-center gap-1 px-1">
-        <label className="relative min-w-0 flex-1">
-          <Search
-            className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ds-faint"
-            strokeWidth={1.8}
-          />
-          <input
+      {searchVisible ? (
+        <div className="mb-2 flex items-center gap-1 px-2">
+          <SidebarSearchField
             value={searchQuery}
-            onChange={(event) => onSearchQueryChange(event.target.value)}
+            onChange={onSearchQueryChange}
             placeholder={t('sidebarSearchThreads')}
-            className="h-8 w-full rounded-lg border border-transparent bg-white/35 pl-7 pr-7 text-[13px] text-ds-ink outline-none transition placeholder:text-ds-faint focus:border-accent/30 focus:bg-white/60 dark:bg-white/5 dark:focus:bg-white/8"
+            clearLabel={t('clear')}
           />
-          {searchQuery.trim() ? (
-            <button
-              type="button"
-              onClick={() => onSearchQueryChange('')}
-              className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
-              title={t('clear')}
-              aria-label={t('clear')}
-            >
-              <X className="h-3.5 w-3.5" strokeWidth={1.9} />
-            </button>
-          ) : null}
-        </label>
-        <button
-          type="button"
-          onClick={() => onShowArchivedChange(!showArchived)}
-          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition ${
-            showArchived
-              ? 'border-accent/30 bg-accent-soft text-accent'
-              : 'border-transparent bg-white/35 text-ds-faint hover:border-ds-border-muted hover:bg-white/60 hover:text-ds-ink dark:bg-white/5 dark:hover:bg-white/8'
-          }`}
-          title={showArchived ? t('sidebarShowActiveThreads') : t('sidebarShowArchivedThreads')}
-          aria-label={showArchived ? t('sidebarShowActiveThreads') : t('sidebarShowArchivedThreads')}
-          aria-pressed={showArchived}
-        >
-          <Archive className="h-3.5 w-3.5" strokeWidth={1.9} />
-        </button>
-      </div>
+        </div>
+      ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-0.5 pb-1">
+      <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2 pt-0.5">
         {groups.length === 0 ? (
           <SidebarEmpty
             runtimeReady={runtimeReady}
@@ -213,6 +340,7 @@ export function SidebarProjectsSection({
 
         {groups.map(([workspacePath, list]) => {
           const folderName = workspaceLabelFromPath(workspacePath)
+          const workspaceContext = workspaceContextLabel(workspacePath, folderName)
           const isCollapsed = collapsed[workspacePath] === true
           const sortedThreads = [...list].sort(
             (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
@@ -223,60 +351,56 @@ export function SidebarProjectsSection({
             ? sortedThreads
             : sortedThreads.slice(0, 5)
           return (
-            <div key={workspacePath} className="mb-1">
-              <div
-                className="group flex w-full items-center gap-0.5 rounded-[10px] text-[14px] font-medium text-ds-ink transition hover:bg-ds-hover/45"
+            <div key={workspacePath} className="mb-2">
+              <SidebarTreeRow
                 title={workspacePath}
+                onClick={() =>
+                  setCollapsed((current) => ({ ...current, [workspacePath]: !current[workspacePath] }))
+                }
+                className="min-h-[36px] text-[13.5px]"
+                buttonClassName="items-center gap-2 px-2.5 py-2"
+                actionsVisibility="hidden"
+                actions={
+                  <>
+                    <SidebarIconButton
+                      onClick={() => onCreateThreadInWorkspace(workspacePath)}
+                      title={t('sidebarWorkspaceNewThread')}
+                      ariaLabel={t('sidebarWorkspaceNewThread')}
+                      className="h-6 w-6"
+                      stopPropagation
+                    >
+                      <Plus className="h-3.5 w-3.5" strokeWidth={1.9} />
+                    </SidebarIconButton>
+                    <SidebarIconButton
+                      onClick={() => void handleRemoveWorkspace(workspacePath)}
+                      title={t('sidebarWorkspaceRemove')}
+                      ariaLabel={t('sidebarWorkspaceRemove')}
+                      tone="danger"
+                      className="h-6 w-6"
+                      stopPropagation
+                    >
+                      <Trash2 className="h-3.5 w-3.5" strokeWidth={1.9} />
+                    </SidebarIconButton>
+                  </>
+                }
               >
-                <button
-                  type="button"
-                  onClick={() =>
-                    setCollapsed((current) => ({ ...current, [workspacePath]: !current[workspacePath] }))
-                  }
-                  className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left"
-                >
-                  {isCollapsed ? (
-                    <ChevronRight className="h-3 w-3 shrink-0 text-ds-faint" strokeWidth={2} />
-                  ) : (
-                    <ChevronDown className="h-3 w-3 shrink-0 text-ds-faint" strokeWidth={2} />
-                  )}
-                  {isCollapsed ? (
-                    <Folder className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.75} />
-                  ) : (
-                    <FolderOpen className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.75} />
-                  )}
-                  <span className="min-w-0 flex-1 truncate">{folderName}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onCreateThreadInWorkspace(workspacePath)
-                  }}
-                  className="shrink-0 rounded-md p-1 text-ds-faint opacity-45 transition hover:bg-ds-hover/80 hover:text-ds-ink hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
-                  title={t('sidebarWorkspaceNewThread')}
-                  aria-label={t('sidebarWorkspaceNewThread')}
-                >
-                  <Plus className="h-3.5 w-3.5" strokeWidth={1.9} />
-                </button>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    void handleRemoveWorkspace(workspacePath)
-                  }}
-                  className="mr-1 shrink-0 rounded-md p-1 text-ds-faint opacity-45 transition hover:bg-ds-hover/80 hover:text-red-500 hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
-                  title={t('sidebarWorkspaceRemove')}
-                  aria-label={t('sidebarWorkspaceRemove')}
-                >
-                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.9} />
-                </button>
-              </div>
+                {isCollapsed ? (
+                  <Folder className="h-4 w-4 shrink-0 text-ds-muted" strokeWidth={1.75} />
+                ) : (
+                  <FolderOpen className="h-4 w-4 shrink-0 text-ds-muted" strokeWidth={1.75} />
+                )}
+                <span className="min-w-0 flex-1 truncate">{folderName}</span>
+                {workspaceContext ? (
+                  <span className="min-w-0 max-w-[42%] shrink truncate text-[12.5px] text-ds-faint">
+                    {workspaceContext}
+                  </span>
+                ) : null}
+              </SidebarTreeRow>
 
               {!isCollapsed ? (
-                <div className="mt-0.5 space-y-0.5 pl-2">
+                <div className="mt-1 space-y-[3px] pl-4">
                   {sortedThreads.length === 0 ? (
-                    <div className="flex items-center justify-between gap-2 px-2 py-1">
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
                       <div className="text-[12.5px] leading-5 text-ds-faint">
                         {searchQuery.trim()
                           ? t('sidebarSearchEmpty')
@@ -288,7 +412,7 @@ export function SidebarProjectsSection({
                         <button
                           type="button"
                           onClick={() => onCreateThreadInWorkspace(workspacePath)}
-                          className="shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+                          className="shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ds-faint transition hover:bg-[var(--ds-sidebar-row-hover)] hover:text-ds-ink"
                         >
                           {t('sidebarWorkspaceNewThread')}
                         </button>
@@ -311,6 +435,9 @@ export function SidebarProjectsSection({
                           unreadThreadIds[thread.id] === true && activeThreadId !== thread.id
                         }
                         onSelect={() => onSelectThread(thread.id)}
+                        onContextMenu={(event) => openThreadContextMenu(event, thread)}
+                        onRename={() => void handleRenameThread(thread)}
+                        onArchive={() => void handleArchiveThread(thread)}
                         onDelete={() => void handleDeleteThread(thread)}
                         onRestore={() => void handleRestoreThread(thread)}
                       />
@@ -325,7 +452,7 @@ export function SidebarProjectsSection({
                           [workspacePath]: !workspaceExpanded
                         }))
                       }
-                      className="ml-1 mt-0.5 rounded-md px-2 py-1 text-[12.5px] text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+                      className="ml-1 mt-1 rounded-md px-2.5 py-1.5 text-[12.5px] text-ds-faint transition hover:bg-[var(--ds-sidebar-row-hover)] hover:text-ds-ink"
                     >
                       {workspaceExpanded
                         ? t('sidebarWorkspaceShowLess')
@@ -340,6 +467,19 @@ export function SidebarProjectsSection({
           )
         })}
       </div>
+
+      {threadContextMenu ? (
+        <ThreadContextMenu
+          state={threadContextMenu}
+          busy={deletingThreadIds[threadContextMenu.thread.id] === true}
+          onClose={() => setThreadContextMenu(null)}
+          onRename={() => void handleRenameThread(threadContextMenu.thread)}
+          onArchive={() => void handleArchiveThread(threadContextMenu.thread)}
+          onDelete={() => void handleDeleteThread(threadContextMenu.thread)}
+          onRestore={() => void handleRestoreThread(threadContextMenu.thread)}
+          t={t}
+        />
+      ) : null}
     </div>
   )
 }
@@ -352,6 +492,9 @@ type ThreadRowProps = {
   showRunning: boolean
   showUnread: boolean
   onSelect: () => void
+  onContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void
+  onRename: () => void
+  onArchive: () => void
   onDelete: () => void
   onRestore: () => void
 }
@@ -364,6 +507,9 @@ function ThreadRow({
   showRunning,
   showUnread,
   onSelect,
+  onContextMenu,
+  onRename,
+  onArchive,
   onDelete,
   onRestore
 }: ThreadRowProps): ReactElement {
@@ -377,113 +523,216 @@ function ThreadRow({
       ? t('sidebarThreadForkedFrom', { title: forkedFromTitle })
       : t('sidebarThreadForked')
     : ''
+  const updatedLabel = formatRelativeTime(thread.updatedAt, locale)
   const ariaLabel = [
     thread.title,
+    updatedLabel,
     showRunning ? t('sidebarThreadRunning') : '',
     showUnreadDot ? t('sidebarThreadUnread') : '',
     forkLabel
   ].filter(Boolean).join(' — ')
 
   return (
-    <div
-      className={`group relative w-full overflow-hidden rounded-[10px] transition ${
-        active
-          ? 'bg-black/8 text-ds-ink dark:bg-white/[0.055]'
-          : 'hover:bg-ds-hover/4 dark:hover:bg-white/[0.03]'
-      }`}
+    <SidebarTreeRow
+      active={active}
+      actionsVisibility={deleting ? 'visible' : 'hidden'}
+      actions={
+        <>
+          <SidebarIconButton
+            onClick={archived ? onRestore : onArchive}
+            disabled={deleting}
+            tone="accent"
+            title={archived ? t('sidebarThreadRestore') : t('sidebarThreadArchive')}
+            ariaLabel={archived ? t('sidebarThreadRestore') : t('sidebarThreadArchive')}
+            stopPropagation
+          >
+            {deleting ? (
+              <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
+            ) : archived ? (
+              <RotateCcw className="h-3 w-3" strokeWidth={1.9} />
+            ) : (
+              <Archive className="h-3 w-3" strokeWidth={1.9} />
+            )}
+          </SidebarIconButton>
+          <SidebarIconButton
+            onClick={onDelete}
+            disabled={deleting}
+            tone="danger"
+            title={t('sidebarThreadDelete')}
+            ariaLabel={t('sidebarThreadDelete')}
+            stopPropagation
+          >
+            <Trash2 className="h-3 w-3" strokeWidth={1.9} />
+          </SidebarIconButton>
+        </>
+      }
+      className="min-h-[34px]"
+      buttonClassName="items-center gap-2 px-2.5 py-1.5"
+      disabled={deleting}
+      ariaLabel={ariaLabel}
+      title={forkLabel ? `${thread.title}\n${forkLabel}` : thread.title}
+      onClick={onSelect}
+      onContextMenu={onContextMenu}
     >
-      <span
-        aria-hidden
-        className={`absolute bottom-1 top-1 left-0 w-[2px] rounded-full transition ${
-          active ? 'bg-accent opacity-100' : 'bg-transparent opacity-0'
-        }`}
-      />
-      <button
-        type="button"
-        onClick={onSelect}
-        className="flex w-full items-start gap-1.5 px-3 py-2 pr-8 text-left"
-        disabled={deleting}
-        aria-label={ariaLabel}
-        title={forkLabel ? `${thread.title}\n${forkLabel}` : thread.title}
-      >
+      {forked ? (
+        <GitFork
+          className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-accent' : 'text-ds-faint/90'}`}
+          strokeWidth={1.8}
+        />
+      ) : null}
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
         <span
-          className="flex w-4 shrink-0 flex-col items-center justify-center self-start pt-0.5"
-          aria-hidden={!showRunning && !showUnreadDot}
+          className={`min-w-0 flex-1 truncate text-[13.5px] leading-5 ${
+            showUnreadDot && !active ? 'font-semibold text-ds-ink' : 'text-ds-ink'
+          }`}
         >
-          {showRunning ? (
-            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" strokeWidth={2} />
-          ) : showUnreadDot ? (
-            <span
-              className="block h-2 w-2 shrink-0 rounded-full bg-accent shadow-[0_0_0_1px_rgba(79,124,255,0.2)]"
-              title={t('sidebarThreadUnread')}
-            />
-          ) : null}
+          {thread.title}
         </span>
         {forked ? (
-          <GitFork
-            className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${active ? 'text-accent' : 'text-ds-faint/90'}`}
-            strokeWidth={1.8}
-          />
-        ) : (
-          <MessageSquare
-            className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${active ? 'text-accent' : 'text-ds-faint/90'}`}
-            strokeWidth={1.8}
-          />
-        )}
-        <span className="min-w-0 flex-1">
-          <span className="flex min-w-0 items-center gap-1.5">
-            <span
-              className={`min-w-0 flex-1 truncate text-[14px] leading-[1.35] ${
-                showUnreadDot && !active ? 'font-semibold text-ds-ink' : 'text-ds-ink'
-              }`}
-            >
-              {thread.title}
-            </span>
-            {forked ? (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-accent/15 bg-accent/8 px-1.5 py-0.5 text-[10.5px] font-semibold leading-none text-accent">
-                <GitFork className="h-2.5 w-2.5" strokeWidth={1.8} />
-                {t('sidebarThreadForkBadge')}
-              </span>
-            ) : null}
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-accent/15 bg-accent/8 px-1.5 py-0.5 text-[10.5px] font-semibold leading-none text-accent">
+            <GitFork className="h-2.5 w-2.5" strokeWidth={1.8} />
+            {t('sidebarThreadForkBadge')}
           </span>
-          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11.5px] leading-4 text-ds-faint">
-            <span className="shrink-0 tabular-nums">{formatRelativeTime(thread.updatedAt, locale)}</span>
-            {forkLabel ? (
-              <>
-                <span className="opacity-70">·</span>
-                <span className="truncate">{forkLabel}</span>
-              </>
-            ) : null}
-          </span>
+        ) : null}
+        <span className="shrink-0 text-[12px] leading-4 text-ds-faint tabular-nums">
+          {updatedLabel}
         </span>
-      </button>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation()
-          if (archived) {
-            onRestore()
-          } else {
-            onDelete()
-          }
-        }}
-        disabled={deleting}
-        className={`absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-ds-faint opacity-0 transition hover:bg-ds-hover focus-visible:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-100 ${
-          archived ? 'hover:text-accent' : 'hover:text-red-600'
-        }`}
-        title={archived ? t('sidebarThreadRestore') : t('sidebarThreadArchive')}
-        aria-label={archived ? t('sidebarThreadRestore') : t('sidebarThreadArchive')}
-      >
-        {deleting ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
-        ) : archived ? (
-          <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.9} />
-        ) : (
-          <Archive className="h-3.5 w-3.5" strokeWidth={1.9} />
-        )}
-      </button>
+        <ThreadActivityDot
+          running={showRunning}
+          unread={showUnreadDot}
+          unreadLabel={t('sidebarThreadUnread')}
+        />
+      </span>
+    </SidebarTreeRow>
+  )
+}
+
+function ThreadContextMenu({
+  state,
+  busy,
+  onClose,
+  onRename,
+  onArchive,
+  onDelete,
+  onRestore,
+  t
+}: {
+  state: ThreadContextMenuState
+  busy: boolean
+  onClose: () => void
+  onRename: () => void
+  onArchive: () => void
+  onDelete: () => void
+  onRestore: () => void
+  t: (k: string, opts?: Record<string, unknown>) => string
+}): ReactElement {
+  const archived = state.thread.archived === true
+  const run = (action: () => void): void => {
+    onClose()
+    action()
+  }
+
+  return (
+    <div
+      role="menu"
+      aria-label={state.thread.title}
+      className="ds-thread-context-menu ds-no-drag fixed z-50 min-w-[168px] rounded-lg border border-ds-border bg-ds-card/98 p-1 text-[13px] text-ds-ink shadow-[0_16px_42px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:bg-ds-card"
+      style={{ left: state.x, top: state.y }}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <ThreadContextMenuItem
+        icon={<PencilLine className="h-3.5 w-3.5" strokeWidth={1.9} />}
+        label={t('sidebarThreadRename')}
+        disabled={busy}
+        onClick={() => run(onRename)}
+      />
+      <ThreadContextMenuItem
+        icon={
+          archived
+            ? <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.9} />
+            : <Archive className="h-3.5 w-3.5" strokeWidth={1.9} />
+        }
+        label={archived ? t('sidebarThreadRestore') : t('sidebarThreadArchive')}
+        disabled={busy}
+        onClick={() => run(archived ? onRestore : onArchive)}
+      />
+      <div className="my-1 h-px bg-ds-border-muted" />
+      <ThreadContextMenuItem
+        icon={<Trash2 className="h-3.5 w-3.5" strokeWidth={1.9} />}
+        label={t('sidebarThreadDelete')}
+        disabled={busy}
+        danger
+        onClick={() => run(onDelete)}
+      />
     </div>
   )
+}
+
+function ThreadContextMenuItem({
+  icon,
+  label,
+  disabled,
+  danger = false,
+  onClick
+}: {
+  icon: ReactElement
+  label: string
+  disabled: boolean
+  danger?: boolean
+  onClick: () => void
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={onClick}
+      className={`flex min-h-[30px] w-full items-center gap-2 rounded-md px-2 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
+        danger
+          ? 'text-red-600 hover:bg-red-500/10 dark:text-red-300'
+          : 'text-ds-ink hover:bg-[var(--ds-sidebar-row-hover)]'
+      }`}
+    >
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-current opacity-80">
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </button>
+  )
+}
+
+function workspaceContextLabel(workspacePath: string, folderName: string): string {
+  const normalized = workspacePath.replace(/[/\\]+$/, '')
+  const parts = normalized.split(/[/\\]/).filter(Boolean)
+  if (parts.length < 2) return ''
+  const parent = parts[parts.length - 2] ?? ''
+  if (!parent || parent.toLowerCase() === folderName.toLowerCase()) return ''
+  return parent
+}
+
+function ThreadActivityDot({
+  running,
+  unread,
+  unreadLabel
+}: {
+  running: boolean
+  unread: boolean
+  unreadLabel: string
+}): ReactElement | null {
+  if (running) {
+    return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" strokeWidth={2} />
+  }
+
+  if (unread) {
+    return (
+      <span
+        className="block h-2 w-2 shrink-0 rounded-full bg-accent shadow-[0_0_0_1px_rgba(79,124,255,0.2)]"
+        title={unreadLabel}
+      />
+    )
+  }
+
+  return null
 }
 
 type SidebarEmptyProps = {
@@ -504,9 +753,9 @@ function SidebarEmpty({
       <button
         type="button"
         onClick={onPickWorkspace}
-        className="mx-1 mt-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-lg px-2 py-1.5 text-left text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink"
+        className="mx-1 mt-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-lg px-2 py-1.5 text-left text-ds-muted transition hover:bg-[var(--ds-sidebar-row-hover)] hover:text-ds-ink"
       >
-        <LayoutGrid className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.75} />
+        <FolderPlus className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate text-[14px] font-medium">
           {t('selectWorkspace')}
         </span>

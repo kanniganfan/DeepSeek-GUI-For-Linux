@@ -25,6 +25,16 @@ export function isClawWorkspacePath(path?: string): boolean {
   return normalized.includes('/.deepseekgui/claw/')
 }
 
+export function isInternalDeepSeekGuiWorkspace(path?: string): boolean {
+  const trimmed = path?.trim() ?? ''
+  if (!trimmed) return false
+  const normalized = normalizePathForMatch(trimmed)
+  return (
+    normalized === '~/.deepseekgui/write_workspace'
+    || normalized.endsWith('/.deepseekgui/write_workspace')
+  )
+}
+
 export function normalizeWorkspaceRoot(path?: string): string {
   const trimmed = path?.trim() ?? ''
   if (!trimmed) return ''

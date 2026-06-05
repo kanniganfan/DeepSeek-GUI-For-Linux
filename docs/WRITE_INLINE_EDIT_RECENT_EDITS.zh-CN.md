@@ -6,7 +6,7 @@
 
 上一版 inline edit 已经具备三类上下文：
 
-- `prefix / suffix`：FIM 前后文。
+- `prefix / suffix`：可编辑范围前后的 provider 上下文。
 - `original`：当前要替换的选区或段落。
 - BM25 + 关键词 RAG：从写作空间其他文件召回术语、事实和风格片段。
 
@@ -82,7 +82,7 @@ Recent edits 是短期、轻量、内存态上下文，不做持久化。
 
 ## Prompt 注入
 
-主进程在 FIM prompt 的隐藏 comment 中新增 `Recent local edits` 区块：
+主进程会把 `Recent local edits` 区块加入 provider prompt。自动 short/long 补全会放进隐藏 Markdown comment；显式 edit 请求会放进 chat action prompt。
 
 ```markdown
 <!-- DeepSeek GUI inline edit.
@@ -109,12 +109,12 @@ Original edit scope:
 
 ## 排障看板
 
-为了定位“模型为什么没按预期编辑/补全”，设置页的 Write 模式区域新增了 AI 写作调用日志弹窗。每次 `write:inline-edit` 和 `write:inline-completion` 调用都会在主进程内存里保留一条最近记录，用户可以刷新查看，也可以一键清空。
+为了定位“模型为什么没按预期编辑/补全”，设置页的 Write 模式区域新增了 AI 写作调用日志弹窗。inline edit 和 inline completion 都复用 `write:inline-completion` 调用；编辑请求会以 `mode: "edit"` 记录在主进程内存中，用户可以刷新查看最近记录，也可以一键清空。
 
 文本编辑记录展示：
 
-- 实际发送给 FIM 的 `prompt`。
-- 实际发送给 FIM 的 `suffix`。
+- 实际发送给 provider 的 `prompt` 或 chat messages。
+- 记录的 `suffix` / 后置上下文。
 - 原始编辑范围 `original`。
 - 模型原始返回 `rawResponse`。
 - 解析后的 `replacement`。
@@ -122,8 +122,8 @@ Original edit scope:
 
 文本补全记录展示：
 
-- 实际发送给 FIM 的 `prompt`。
-- 实际发送给 FIM 的 `suffix`。
+- 实际发送给 provider 的 `prompt`。
+- 记录的 `suffix`。
 - 模型原始返回 `rawResponse`。
 - 解析后的 `completion`。
 - 补全模式、模型、耗时、RAG 片段数和错误信息。
@@ -152,9 +152,9 @@ flowchart LR
   D["用户选区 + 编辑指令"] --> E["解析编辑 scope"]
   C --> F["筛选当前文件 recent edits"]
   E --> F
-  F --> G["write:inline-edit payload"]
-  G --> H["主进程构造 FIM prompt"]
-  H --> I["DeepSeek FIM replacement"]
+  F --> G["write:inline-completion payload (mode=edit)"]
+  G --> H["主进程构造编辑 prompt"]
+  H --> I["DeepSeek EDIT action"]
   I --> J["原地替换"]
   J --> K["记录 inline-edit recent edit"]
 ```
@@ -166,8 +166,7 @@ flowchart LR
 - `src/renderer/src/components/write/WriteMarkdownEditor.tsx`：从 CodeMirror transaction 采集用户编辑。
 - `src/renderer/src/write/write-workspace-store.ts`：保存 recent edits。
 - `src/renderer/src/write/inline-edit.ts`：把 recent edits 放入 inline edit payload。
-- `src/main/services/write-inline-edit-service.ts`：把 recent edits 注入 FIM prompt，并参与 RAG 查询。
-- `src/main/services/write-inline-completion-service.ts`：记录文本补全 FIM 调用日志。
+- `src/main/services/write-inline-completion-service.ts`：把 recent edits 注入编辑/补全 prompt，参与 RAG 查询，解析返回 action，并记录共享调试日志。
 - `src/renderer/src/components/SettingsView.tsx`：展示文本编辑/补全调用日志弹窗。
 - `src/shared/write-inline-edit.ts`：共享 payload 类型。
 
@@ -175,9 +174,9 @@ flowchart LR
 
 - recent edits 的创建、TTL 过滤、当前文件过滤。
 - 同段术语传播和词边界保护。
-- inline edit payload 能携带 recent edits。
+- `mode: "edit"` 的 `write:inline-completion` payload 能携带 recent edits。
 - IPC schema 接受结构化 recent edits。
-- FIM prompt 会包含 recent edits intent signal。
+- provider prompt 会包含 recent edits intent signal。
 
 ## 后续方向
 

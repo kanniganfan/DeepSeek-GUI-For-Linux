@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { NormalizedThread } from '../agent/types'
 import {
+  MAX_THREAD_FORK_REGISTRY_ENTRIES,
   emptyThreadForkRegistry,
   enrichThreadsWithForkInfo,
   forgetThreadFork,
@@ -116,5 +117,47 @@ describe('thread-fork-registry', () => {
     )
 
     expect(forgetThreadFork('child-thread', registry).forks['child-thread']).toBeUndefined()
+  })
+
+  it('caps persisted fork records to the latest entries', () => {
+    let registry = emptyThreadForkRegistry()
+    for (let index = 0; index < MAX_THREAD_FORK_REGISTRY_ENTRIES + 5; index += 1) {
+      registry = markThreadFork(
+        `child-${index}`,
+        thread(`parent-${index}`),
+        { createdAt: `2026-05-25T00:${String(index % 60).padStart(2, '0')}:00.000Z` },
+        registry
+      )
+    }
+
+    expect(Object.keys(registry.forks)).toHaveLength(MAX_THREAD_FORK_REGISTRY_ENTRIES)
+    expect(registry.forks['child-0']).toBeUndefined()
+    expect(registry.forks['child-4']).toBeUndefined()
+    expect(registry.forks['child-5']?.parentThreadId).toBe('parent-5')
+    expect(registry.forks[`child-${MAX_THREAD_FORK_REGISTRY_ENTRIES + 4}`]?.parentThreadId).toBe(
+      `parent-${MAX_THREAD_FORK_REGISTRY_ENTRIES + 4}`
+    )
+  })
+
+  it('keeps refreshed fork records when the registry is capped', () => {
+    let registry = emptyThreadForkRegistry()
+    for (let index = 0; index < MAX_THREAD_FORK_REGISTRY_ENTRIES; index += 1) {
+      registry = markThreadFork(`child-${index}`, thread(`parent-${index}`), {}, registry)
+    }
+
+    registry = markThreadFork('child-0', thread('parent-refreshed', 'Refreshed Parent'), {}, registry)
+    registry = markThreadFork(
+      `child-${MAX_THREAD_FORK_REGISTRY_ENTRIES}`,
+      thread(`parent-${MAX_THREAD_FORK_REGISTRY_ENTRIES}`),
+      {},
+      registry
+    )
+
+    expect(Object.keys(registry.forks)).toHaveLength(MAX_THREAD_FORK_REGISTRY_ENTRIES)
+    expect(registry.forks['child-1']).toBeUndefined()
+    expect(registry.forks['child-0']).toMatchObject({
+      parentThreadId: 'parent-refreshed',
+      parentTitle: 'Refreshed Parent'
+    })
   })
 })

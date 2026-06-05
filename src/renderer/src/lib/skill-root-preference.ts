@@ -1,3 +1,5 @@
+import { readBrowserStorageItem, writeBrowserStorageItem } from './browser-storage'
+
 export type SkillRootId =
   | 'workspace-agents'
   | 'workspace-skills'
@@ -17,20 +19,12 @@ function isSkillRootId(value: string): value is SkillRootId {
 }
 
 export function loadPreferredSkillRootId(): SkillRootId {
-  try {
-    const raw = window.localStorage.getItem(SKILL_ROOT_PREFERENCE_KEY)?.trim() ?? ''
-    return isSkillRootId(raw) ? raw : DEFAULT_SKILL_ROOT_ID
-  } catch {
-    return DEFAULT_SKILL_ROOT_ID
-  }
+  const raw = readBrowserStorageItem(SKILL_ROOT_PREFERENCE_KEY)?.trim() ?? ''
+  return isSkillRootId(raw) ? raw : DEFAULT_SKILL_ROOT_ID
 }
 
 export function savePreferredSkillRootId(id: SkillRootId): void {
-  try {
-    window.localStorage.setItem(SKILL_ROOT_PREFERENCE_KEY, id)
-  } catch {
-    /* localStorage may be unavailable */
-  }
+  writeBrowserStorageItem(SKILL_ROOT_PREFERENCE_KEY, id)
 }
 
 export function joinFsPath(base: string, suffix: string): string {

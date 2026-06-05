@@ -22,4 +22,19 @@ describe('chat-store-runtime-helpers compaction state', () => {
     expect(threadSnapshotLooksRunning([runningCompaction])).toBe(true)
     expect(threadSnapshotLooksRunning([completedCompaction])).toBe(false)
   })
+
+  it('trusts an explicit idle thread status over stale pending blocks', () => {
+    const staleTool: ChatBlock = {
+      kind: 'tool',
+      id: 'tool-stale',
+      summary: 'Old tool',
+      status: 'running',
+      toolKind: 'tool_call'
+    }
+
+    expect(threadSnapshotLooksRunning([staleTool], 'idle')).toBe(false)
+    expect(threadSnapshotLooksRunning([staleTool], 'aborted')).toBe(false)
+    expect(threadSnapshotLooksRunning([staleTool], 'running')).toBe(true)
+    expect(threadSnapshotLooksRunning([staleTool])).toBe(true)
+  })
 })

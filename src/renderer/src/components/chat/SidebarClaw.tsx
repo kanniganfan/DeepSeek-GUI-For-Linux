@@ -7,6 +7,11 @@ import {
   Settings
 } from 'lucide-react'
 import type { ClawImChannelV1 } from '@shared/app-settings'
+import {
+  SidebarIconButton,
+  SidebarSectionHeader,
+  SidebarTreeRow
+} from '../sidebar/SidebarPrimitives'
 
 type ClawSidebarContentProps = {
   channels: ClawImChannelV1[]
@@ -38,32 +43,28 @@ export function ClawSidebarContent({
 
   return (
     <div className="ds-no-drag flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center justify-between px-2 pb-1 pt-0.5">
-        <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-ds-faint">
-          {t('clawSidebarIm')}
-        </span>
-        <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            onClick={onAddChannel}
-            className="rounded-md p-1 text-ds-faint transition hover:bg-ds-hover/70 hover:text-ds-ink"
-            title={t('clawAddIm')}
-            aria-label={t('clawAddIm')}
-          >
-            <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-          </button>
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            disabled={channels.length === 0}
-            className="rounded-md p-1 text-ds-faint transition hover:bg-ds-hover/70 hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-40"
-            title={t('clawSettings')}
-            aria-label={t('clawSettings')}
-          >
-            <Settings className="h-3.5 w-3.5" strokeWidth={1.75} />
-          </button>
-        </div>
-      </div>
+      <SidebarSectionHeader
+        label={t('clawSidebarIm')}
+        actions={
+          <>
+            <SidebarIconButton
+              onClick={onAddChannel}
+              title={t('clawAddIm')}
+              ariaLabel={t('clawAddIm')}
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+            </SidebarIconButton>
+            <SidebarIconButton
+              onClick={onOpenSettings}
+              disabled={channels.length === 0}
+              title={t('clawSettings')}
+              ariaLabel={t('clawSettings')}
+            >
+              <Settings className="h-3.5 w-3.5" strokeWidth={1.75} />
+            </SidebarIconButton>
+          </>
+        }
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-0.5 pb-1">
         {channels.length === 0 ? (
@@ -100,55 +101,45 @@ export function ClawSidebarContent({
 
               return (
                 <div key={channel.id} className="mb-1">
-                  <div
-                    className={`group flex w-full items-center gap-0.5 rounded-[10px] text-[14px] font-medium transition ${
-                      disabled
-                        ? 'opacity-55'
-                        : active
-                          ? 'bg-ds-hover/70 text-ds-ink ring-1 ring-ds-border-muted/50'
-                          : 'text-ds-ink hover:bg-ds-hover/45'
-                    }`}
-                    title={channel.label}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => onSelectChannel(channel.id)}
-                      className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left"
-                      disabled={!runtimeReady || disabled}
-                      title={disabled ? t('clawImDisabledSidebar') : undefined}
-                    >
-                      <MessageSquare className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
-                      <ClawProviderPill provider={channel.provider} active={active} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate">{channel.label}</span>
-                        <span className="mt-0.5 block truncate text-[11.5px] text-ds-faint">
-                          {secondaryLabel}
-                        </span>
-                      </span>
-                    </button>
-                    <span
-                      className={`ml-1 h-2 w-2 shrink-0 rounded-full ${
+                  <SidebarTreeRow
+                    active={active}
+                    activeVariant="outline"
+                    className={disabled ? 'opacity-55' : undefined}
+                    title={disabled ? t('clawImDisabledSidebar') : channel.label}
+                    disabled={!runtimeReady || disabled}
+                    onClick={() => onSelectChannel(channel.id)}
+                    trailing={
+                      <span
+                        className={`mx-1 h-2 w-2 shrink-0 rounded-full ${
                         disabled
                           ? 'bg-ds-faint'
                           : running || channel.threadId.trim()
                             ? 'bg-emerald-400'
                             : 'bg-amber-400'
                       }`}
-                    />
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onResetChannel(channel.id)
-                      }}
-                      disabled={!runtimeReady || disabled}
-                      className="mr-1 shrink-0 rounded-md p-1 text-ds-faint opacity-45 transition hover:bg-ds-hover/80 hover:text-ds-ink hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed"
-                      title={t('clawClearSession')}
-                      aria-label={t('clawClearSession')}
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.9} />
-                    </button>
-                  </div>
+                      />
+                    }
+                    actions={
+                      <SidebarIconButton
+                        onClick={() => onResetChannel(channel.id)}
+                        disabled={!runtimeReady || disabled}
+                        title={t('clawClearSession')}
+                        ariaLabel={t('clawClearSession')}
+                        stopPropagation
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.9} />
+                      </SidebarIconButton>
+                    }
+                  >
+                    <MessageSquare className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
+                    <ClawProviderPill provider={channel.provider} active={active} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{channel.label}</span>
+                      <span className="mt-0.5 block truncate text-[11.5px] text-ds-faint">
+                        {secondaryLabel}
+                      </span>
+                    </span>
+                  </SidebarTreeRow>
                 </div>
               )
             })}
@@ -160,7 +151,7 @@ export function ClawSidebarContent({
 }
 
 export function clawProviderDisplayLabel(provider: ClawImChannelV1['provider']): string {
-  void provider
+  if (provider === 'weixin') return 'WeChat'
   return 'Feishu / Lark'
 }
 
@@ -171,7 +162,30 @@ export function ClawProviderLogo({
   provider: ClawImChannelV1['provider']
   className?: string
 }): ReactElement {
-  void provider
+  if (provider === 'weixin') {
+    return (
+      <svg
+        className={className}
+        viewBox="0 0 24 24"
+        fill="none"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <path
+          d="M10.2 5.1C6.3 5.1 3.1 7.6 3.1 10.8c0 1.8 1 3.4 2.6 4.5l-.6 2.1 2.4-1.2c.8.2 1.7.4 2.7.4 3.9 0 7.1-2.6 7.1-5.8s-3.2-5.7-7.1-5.7Z"
+          fill="#18C26E"
+        />
+        <path
+          d="M14.4 10.4c3.3 0 6 2.1 6 4.8 0 1.5-.8 2.8-2.1 3.7l.5 1.7-2-1c-.7.2-1.5.3-2.4.3-3.3 0-6-2.1-6-4.7 0-2.7 2.7-4.8 6-4.8Z"
+          fill="#35D98A"
+        />
+        <circle cx="7.9" cy="10.3" r="0.75" fill="white" />
+        <circle cx="12.1" cy="10.3" r="0.75" fill="white" />
+        <circle cx="12.6" cy="14.9" r="0.62" fill="white" />
+        <circle cx="16.2" cy="14.9" r="0.62" fill="white" />
+      </svg>
+    )
+  }
   return (
     <svg
       className={className}

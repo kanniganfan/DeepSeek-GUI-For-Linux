@@ -11,12 +11,14 @@ import {
 import { useTranslation } from 'react-i18next'
 import type { RuntimeConnectionStatus, ChatBlock } from '../../agent/types'
 import type { QueuedUserMessage } from '../../store/chat-store-types'
+import type { ModelProviderModelGroup } from '@shared/ds-gui-api'
 import {
   useWriteWorkspaceStore,
   writeRelativeToWorkspace
 } from '../../write/write-workspace-store'
 import { MessageTimeline } from '../chat/MessageTimeline'
 import { FloatingComposer } from '../chat/FloatingComposer'
+import type { ComposerReasoningEffort } from '../chat/FloatingComposerModelPicker'
 
 type Props = {
   input: string
@@ -31,14 +33,16 @@ type Props = {
   liveAssistant: string
   composerModel: string
   composerPickList: string[]
+  composerModelGroups?: ModelProviderModelGroup[]
+  composerReasoningEffort: ComposerReasoningEffort
   setComposerModel: (modelId: string) => void
+  setComposerReasoningEffort: (effort: ComposerReasoningEffort) => void
   queuedMessages: QueuedUserMessage[]
   removeQueuedMessage: (id: string) => void
   onSend: () => void
-  onInterrupt: () => void
+  onInterrupt: (options?: { discard?: boolean }) => void
   onRetryConnection: () => void
   onOpenSettings: () => void
-  onOpenDiagnostics: () => void
   onNewConversation: () => void
   onCollapse: () => void
   className?: string
@@ -57,14 +61,16 @@ export function WriteAssistantPanel({
   liveAssistant,
   composerModel,
   composerPickList,
+  composerModelGroups = [],
+  composerReasoningEffort,
   setComposerModel,
+  setComposerReasoningEffort,
   queuedMessages,
   removeQueuedMessage,
   onSend,
   onInterrupt,
   onRetryConnection,
   onOpenSettings,
-  onOpenDiagnostics,
   onNewConversation,
   onCollapse,
   className = ''
@@ -144,7 +150,6 @@ export function WriteAssistantPanel({
             runtimeConnection={runtimeConnection}
             onRetryConnection={onRetryConnection}
             onOpenSettings={onOpenSettings}
-            onOpenDiagnostics={onOpenDiagnostics}
             onSelectSuggestion={(text) => setInput(text)}
           />
         ) : (
@@ -250,7 +255,10 @@ export function WriteAssistantPanel({
           hasActiveThread={Boolean(activeThreadId)}
           composerModel={composerModel}
           composerPickList={composerPickList}
+          composerModelGroups={composerModelGroups}
+          composerReasoningEffort={composerReasoningEffort}
           onComposerModelChange={setComposerModel}
+          onComposerReasoningEffortChange={setComposerReasoningEffort}
           modelPickerMode="combobox"
           queuedMessages={queuedMessages}
           onRemoveQueuedMessage={removeQueuedMessage}

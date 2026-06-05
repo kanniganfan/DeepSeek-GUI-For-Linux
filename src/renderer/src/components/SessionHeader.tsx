@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
-import { GitFork, MessageSquare, Minimize2 } from 'lucide-react'
+import { GitFork } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useChatStore } from '../store/chat-store'
 import { formatRelativeTime } from '../lib/format-relative-time'
@@ -20,8 +20,6 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
   const runtimeConnection = useChatStore((s) => s.runtimeConnection)
   const workspaceLabel = useChatStore((s) => s.workspaceLabel)
   const renameActiveThread = useChatStore((s) => s.renameActiveThread)
-  const compactActiveThread = useChatStore((s) => s.compactActiveThread)
-  const forkActiveThread = useChatStore((s) => s.forkActiveThread)
 
   const active = threads.find((th) => th.id === activeThreadId)
   const activeWorkspaceLabel = active?.workspace
@@ -29,7 +27,6 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
     : workspaceLabel
   const [editing, setEditing] = useState(false)
   const [draftTitle, setDraftTitle] = useState('')
-  const actionsDisabled = !active || busy || runtimeConnection !== 'ready'
   const threadUsage = useThreadUsage(
     activeThreadId,
     runtimeConnection === 'ready',
@@ -71,13 +68,6 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
       <div
         className={`session-header-compact ds-no-drag flex min-h-0 min-w-0 flex-1 items-center gap-2 text-left ${className}`}
       >
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] border border-accent/15 bg-accent-soft text-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.62)] dark:border-accent/25 dark:bg-accent-soft dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
-          <MessageSquare
-            className="h-[14px] w-[14px] shrink-0 opacity-95"
-            strokeWidth={2}
-            aria-hidden
-          />
-        </span>
         {active ? (
           <div className="min-w-0 flex-1">
             <div
@@ -119,7 +109,7 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
                   >
                     {t('sessionUsageCompact', {
                       tokens: formatCompactNumber(threadUsage.totalTokens),
-                      cost: formatCost(threadUsage.costUsd),
+                      cost: formatCost(threadUsage.costUsd, i18n.language, threadUsage.costCny),
                       cache: formatPercent(threadUsage.cacheHitRate)
                     })}
                   </span>
@@ -132,30 +122,6 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
             <div className="truncate text-[12.5px] font-medium text-ds-faint">{workspaceLabel}</div>
           </div>
         )}
-        {active ? (
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={() => void compactActiveThread()}
-              disabled={actionsDisabled}
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-35"
-              title={t('compactThread')}
-              aria-label={t('compactThread')}
-            >
-              <Minimize2 className="h-3.5 w-3.5" strokeWidth={1.9} />
-            </button>
-            <button
-              type="button"
-              onClick={() => void forkActiveThread()}
-              disabled={actionsDisabled}
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-35"
-              title={t('forkThread')}
-              aria-label={t('forkThread')}
-            >
-              <GitFork className="h-3.5 w-3.5" strokeWidth={1.9} />
-            </button>
-          </div>
-        ) : null}
       </div>
     )
   }
@@ -232,7 +198,9 @@ export function SessionHeader({ compact = false, className = '' }: Props): React
                     })}
                   </span>
                   <span className="inline-flex items-center rounded-full border border-ds-border bg-ds-card/70 px-2.5 py-1 font-medium text-ds-muted">
-                    {t('sessionUsageCost', { cost: formatCost(threadUsage.costUsd) })}
+                    {t('sessionUsageCost', {
+                      cost: formatCost(threadUsage.costUsd, i18n.language, threadUsage.costCny)
+                    })}
                   </span>
                   <span
                     className="inline-flex items-center rounded-full border border-ds-border bg-ds-card/70 px-2.5 py-1 font-medium text-ds-muted"

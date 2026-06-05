@@ -205,10 +205,47 @@ const DOWNLOAD_EXTENSIONS: Record<string, string> = {
 }
 
 const MAX_HIGHLIGHT_CHARS = 250_000
+export const MAX_HIGHLIGHT_CACHE_ENTRIES = 120
 
 let shikiPromise: Promise<typeof import('shiki')> | null = null
 const highlightCache = new Map<string, string>()
 const inflightHighlights = new Map<string, Promise<string>>()
+
+function highlightCacheKey(code: string, language: string): string {
+  const normalized = normalizeCodeLanguage(language)
+  return `${normalized || 'plain'}\u0000${code}`
+}
+
+function readHighlightCache(cacheKey: string): string | undefined {
+  const cached = highlightCache.get(cacheKey)
+  if (cached === undefined) return undefined
+  highlightCache.delete(cacheKey)
+  highlightCache.set(cacheKey, cached)
+  return cached
+}
+
+function writeHighlightCache(cacheKey: string, html: string): void {
+  highlightCache.delete(cacheKey)
+  highlightCache.set(cacheKey, html)
+  while (highlightCache.size > MAX_HIGHLIGHT_CACHE_ENTRIES) {
+    const oldestKey = highlightCache.keys().next().value
+    if (!oldestKey) break
+    highlightCache.delete(oldestKey)
+  }
+}
+
+export function clearHighlightCodeCache(): void {
+  highlightCache.clear()
+  inflightHighlights.clear()
+}
+
+export function highlightCodeCacheSize(): number {
+  return highlightCache.size
+}
+
+export function hasCachedHighlightCode(code: string, language: string): boolean {
+  return highlightCache.has(highlightCacheKey(code, language))
+}
 
 function loadShiki(): Promise<typeof import('shiki')> {
   shikiPromise ??= import('shiki')
@@ -253,9 +290,9 @@ export function languageFromFilePath(path: string): string {
 
 export async function highlightCodeHtml(code: string, language: string): Promise<string> {
   const normalized = normalizeCodeLanguage(language)
-  const cacheKey = `${normalized || 'plain'}\u0000${code}`
-  const cached = highlightCache.get(cacheKey)
-  if (cached) return cached
+  const cacheKey = highlightCacheKey(code, normalized)
+  const cached = readHighlightCache(cacheKey)
+  if (cached !== undefined) return cached
 
   const inflight = inflightHighlights.get(cacheKey)
   if (inflight) return inflight
@@ -263,7 +300,7 @@ export async function highlightCodeHtml(code: string, language: string): Promise
   const task = (async () => {
     if (!normalized || code.length > MAX_HIGHLIGHT_CHARS) {
       const fallback = renderFallbackCodeHtml(code)
-      highlightCache.set(cacheKey, fallback)
+      writeHighlightCache(cacheKey, fallback)
       return fallback
     }
 
@@ -273,11 +310,11 @@ export async function highlightCodeHtml(code: string, language: string): Promise
         lang: normalized,
         themes: SHIKI_THEMES
       })
-      highlightCache.set(cacheKey, html)
+      writeHighlightCache(cacheKey, html)
       return html
     } catch {
       const fallback = renderFallbackCodeHtml(code)
-      highlightCache.set(cacheKey, fallback)
+      writeHighlightCache(cacheKey, fallback)
       return fallback
     }
   })()

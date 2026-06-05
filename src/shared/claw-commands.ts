@@ -8,15 +8,15 @@ export type ClawCommand =
   | { kind: 'invalidModel' }
 
 export function parseClawCommand(text: string): ClawCommand | null {
-  const raw = text.trim()
+  const raw = text.trim().replace(/^／/, '/')
   const lower = raw.toLowerCase()
-  if (['/clear', '/reset', '/new', '/清空', '/重置', '/新会话'].includes(lower)) {
+  if (/^[/-](?:clear|reset|new|清空|重置|新会话|新话题)$/.test(lower)) {
     return { kind: 'clear' }
   }
-  if (['/help', '/帮助', '/命令'].includes(lower)) {
+  if (/^[/-](?:help|帮助|命令|\?)$/.test(lower)) {
     return { kind: 'help' }
   }
-  const match = raw.match(/^\/(?:model|模型)(?:\s+(.+))?$/i)
+  const match = raw.match(/^[/-](?:model|模型)(?:\s+(.+))?$/i)
   if (!match) return null
   const value = (match[1] ?? '').trim().toLowerCase()
   if (!value) return { kind: 'showModel' }

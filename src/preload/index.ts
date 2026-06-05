@@ -12,17 +12,13 @@ const api = {
   getClawStatus: () => ipcRenderer.invoke('claw:status'),
   runClawTask: (taskId) =>
     ipcRenderer.invoke('claw:task:run', taskId),
+  getScheduleStatus: () => ipcRenderer.invoke('schedule:status'),
+  runScheduleTask: (taskId) =>
+    ipcRenderer.invoke('schedule:task:run', taskId),
   startClawImInstallQr: (provider, options) =>
     ipcRenderer.invoke('claw:im-install:qrcode', { provider, isLark: options?.isLark }),
   pollClawImInstall: (provider, deviceCode) =>
     ipcRenderer.invoke('claw:im-install:poll', { provider, deviceCode }),
-  deepseekSpawnIfNeeded: () =>
-    ipcRenderer.invoke('deepseek:spawn-if-needed'),
-  prepareDeepseekBinary: () => ipcRenderer.invoke('deepseek:prepare-binary'),
-  checkDeepseekUpdate: () =>
-    ipcRenderer.invoke('deepseek:update-check'),
-  installDeepseekUpdate: () =>
-    ipcRenderer.invoke('deepseek:update-install'),
   pickWorkspaceDirectory: (defaultPath) =>
     ipcRenderer.invoke('workspace:pick-directory', defaultPath),
   saveSkillFile: (rootPath, skillName, content) =>
@@ -35,8 +31,6 @@ const api = {
     ipcRenderer.invoke('deepseek:config:write', content),
   openDeepseekConfigDir: () =>
     ipcRenderer.invoke('deepseek:config:open-dir'),
-  diagnoseDeepseekRuntime: () =>
-    ipcRenderer.invoke('deepseek:diagnostics'),
   getGitBranches: (workspaceRoot) =>
     ipcRenderer.invoke('git:branches', workspaceRoot),
   switchGitBranch: (workspaceRoot, branch) =>
@@ -46,30 +40,6 @@ const api = {
   listEditors: () => ipcRenderer.invoke('editor:list'),
   openEditorPath: (options) =>
     ipcRenderer.invoke('editor:open-path', options),
-  createTerminalSession: (options) =>
-    ipcRenderer.invoke('terminal:create', options),
-  writeTerminalSession: (payload) =>
-    ipcRenderer.invoke('terminal:write', payload),
-  resizeTerminalSession: (payload) =>
-    ipcRenderer.invoke('terminal:resize', payload),
-  closeTerminalSession: (payload) =>
-    ipcRenderer.invoke('terminal:close', payload),
-  onTerminalData: (handler) => {
-    const wrapped = (
-      _: Electron.IpcRendererEvent,
-      payload: Parameters<typeof handler>[0]
-    ) => handler(payload)
-    ipcRenderer.on('terminal:data', wrapped)
-    return () => ipcRenderer.removeListener('terminal:data', wrapped)
-  },
-  onTerminalExit: (handler) => {
-    const wrapped = (
-      _: Electron.IpcRendererEvent,
-      payload: Parameters<typeof handler>[0]
-    ) => handler(payload)
-    ipcRenderer.on('terminal:exit', wrapped)
-    return () => ipcRenderer.removeListener('terminal:exit', wrapped)
-  },
   listWorkspaceDirectory: (options) =>
     ipcRenderer.invoke('file:list-workspace-directory', options),
   resolveWorkspaceFile: (options) =>
@@ -86,6 +56,8 @@ const api = {
     ipcRenderer.invoke('file:create-workspace-directory', payload),
   saveWorkspaceClipboardImage: (payload) =>
     ipcRenderer.invoke('file:save-workspace-clipboard-image', payload),
+  readClipboardImage: () =>
+    ipcRenderer.invoke('clipboard:read-image'),
   renameWorkspaceEntry: (payload) =>
     ipcRenderer.invoke('file:rename-workspace-entry', payload),
   deleteWorkspaceEntry: (payload) =>
@@ -147,12 +119,21 @@ const api = {
     ipcRenderer.on('claw:channel-activity', wrapped)
     return () => ipcRenderer.removeListener('claw:channel-activity', wrapped)
   },
+  mirrorClawChannelMessage: (threadId, text, direction) =>
+    ipcRenderer.invoke('claw:channel:mirror', { threadId, text, direction }),
   mirrorClawChannelMessageToFeishu: (threadId, text, direction) =>
     ipcRenderer.invoke('claw:channel:mirror-to-feishu', { threadId, text, direction }),
   createClawTaskFromText: (text, options) =>
     ipcRenderer.invoke('claw:task:create-from-text', {
       text,
       channelId: options?.channelId,
+      modelHint: options?.modelHint,
+      mode: options?.mode
+    }),
+  createScheduleTaskFromText: (text, options) =>
+    ipcRenderer.invoke('schedule:task:create-from-text', {
+      text,
+      workspaceRoot: options?.workspaceRoot,
       modelHint: options?.modelHint,
       mode: options?.mode
     }),

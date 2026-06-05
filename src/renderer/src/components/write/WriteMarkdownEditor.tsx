@@ -45,6 +45,7 @@ type Props = {
   value: string
   workspaceRoot?: string | null
   filePath?: string | null
+  imageDirectory?: string | null
   appearance?: 'source' | 'live'
   livePreviewEnabled?: boolean
   readOnly?: boolean
@@ -273,6 +274,7 @@ export function WriteMarkdownEditor({
   value,
   workspaceRoot,
   filePath,
+  imageDirectory,
   appearance = 'live',
   livePreviewEnabled = appearance === 'live',
   readOnly = false,
@@ -298,6 +300,7 @@ export function WriteMarkdownEditor({
   const editableCompartmentRef = useRef<Compartment | null>(null)
   const workspaceRootRef = useRef(workspaceRoot ?? '')
   const filePathRef = useRef(filePath ?? '')
+  const imageDirectoryRef = useRef(imageDirectory ?? '')
   const livePreviewEnabledRef = useRef(livePreviewEnabled)
   const readOnlyRef = useRef(readOnly)
   const completionModelRef = useRef(completionModel)
@@ -319,6 +322,7 @@ export function WriteMarkdownEditor({
 
   workspaceRootRef.current = workspaceRoot ?? ''
   filePathRef.current = filePath ?? ''
+  imageDirectoryRef.current = imageDirectory ?? ''
   livePreviewEnabledRef.current = livePreviewEnabled
   readOnlyRef.current = readOnly
   completionModelRef.current = completionModel
@@ -432,7 +436,10 @@ export function WriteMarkdownEditor({
             void window.dsGui
               .saveWorkspaceClipboardImage({
                 workspaceRoot: nextWorkspaceRoot,
-                currentFilePath: nextFilePath
+                currentFilePath: nextFilePath,
+                ...(imageDirectoryRef.current.trim()
+                  ? { imageDirectory: imageDirectoryRef.current.trim() }
+                  : {})
               })
               .then((result) => {
                 if (!result.ok) {

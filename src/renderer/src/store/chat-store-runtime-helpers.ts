@@ -1,6 +1,7 @@
 import type {
   ChatBlock,
   NormalizedThread,
+  RuntimeDisclosureMetadata,
   UserMessageEventPayload
 } from '../agent/types'
 import { normalizeWorkspaceRoot } from '../lib/workspace-path'
@@ -22,13 +23,16 @@ export function threadBelongsToWorkspace(
 export function hasPendingRuntimeWork(block: ChatBlock): boolean {
   if (block.kind === 'tool') return block.status === 'running'
   if (block.kind === 'compaction') return block.status === 'running'
+  if (block.kind === 'review') return block.status === 'running'
   if (block.kind === 'approval') return block.status === 'pending'
   if (block.kind === 'user_input') return block.status === 'pending'
   return false
 }
 
 export function threadSnapshotLooksRunning(blocks: ChatBlock[], threadStatus?: string): boolean {
-  if (runtimeStatusLooksRunning(threadStatus)) return true
+  if (threadStatus != null && threadStatus.trim()) {
+    return runtimeStatusLooksRunning(threadStatus)
+  }
   return blocks.some(hasPendingRuntimeWork)
 }
 
@@ -46,19 +50,37 @@ export function upsertUserBlock(blocks: ChatBlock[], ev: UserMessageEventPayload
     id: ev.itemId,
     createdAt: ev.createdAt,
     text: ev.text,
-    ...(ev.modelLabel ? { modelLabel: ev.modelLabel } : {})
+    ...(ev.modelLabel ? { modelLabel: ev.modelLabel } : {}),
+    ...(ev.managedBy ? { managedBy: ev.managedBy } : {}),
+    ...(ev.meta ? { meta: ev.meta } : {})
   }
   const existingIndex = blocks.findIndex((block) => block.kind === 'user' && block.id === ev.itemId)
   if (existingIndex < 0) return [...blocks, nextBlock]
   const current = blocks[existingIndex]
+  const meta = mergeRuntimeDisclosureMeta(
+    current.kind === 'user' ? current.meta : undefined,
+    nextBlock.kind === 'user' ? nextBlock.meta : undefined
+  )
   const merged: ChatBlock = {
     ...current,
     ...nextBlock,
-    createdAt: current.createdAt ?? nextBlock.createdAt
+    createdAt: current.createdAt ?? nextBlock.createdAt,
+    ...(meta ? { meta } : {})
   }
   const next = [...blocks]
   next[existingIndex] = merged
   return next
+}
+
+function mergeRuntimeDisclosureMeta(
+  current: RuntimeDisclosureMetadata | undefined,
+  next: RuntimeDisclosureMetadata | undefined
+): RuntimeDisclosureMetadata | undefined {
+  if (!current && !next) return undefined
+  return {
+    ...(current ?? {}),
+    ...(next ?? {})
+  }
 }
 
 export function reconcileOptimisticUserBlock(
@@ -101,6 +123,8 @@ export function collectAssistantTextForTurn(
 export function clearedThreadSelection(): Pick<
   ChatState,
   | 'activeThreadId'
+  | 'activeThreadGoal'
+  | 'activeThreadTodos'
   | 'blocks'
   | 'lastSeq'
   | 'liveReasoning'
@@ -117,6 +141,8 @@ export function clearedThreadSelection(): Pick<
 > {
   return {
     activeThreadId: null,
+    activeThreadGoal: null,
+    activeThreadTodos: null,
     blocks: [],
     lastSeq: 0,
     liveReasoning: '',

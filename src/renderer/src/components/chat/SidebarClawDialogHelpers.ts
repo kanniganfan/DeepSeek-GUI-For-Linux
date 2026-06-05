@@ -5,15 +5,14 @@ import type {
   ClawImChannelV1,
   ClawImSettingsV1,
   ClawImPlatformCredentialV1,
-  ClawImProvider,
-  ClawModel
+  ClawImProvider
 } from '@shared/app-settings'
 
 export type ClawImDialogMode = 'add' | 'edit'
 export type ClawConnectionMode = 'official-install-qr'
-export type ClawInstallTarget = 'feishu' | 'lark'
+export type ClawInstallTarget = 'feishu' | 'lark' | 'weixin'
 export type ClawAgentTab = 'identity' | 'personality' | 'userContext' | 'replyRules'
-export type ClawOfficialInstallProvider = 'feishu'
+export type ClawOfficialInstallProvider = 'feishu' | 'weixin'
 export type ClawDialogStep = 'defaults' | 'prompt' | 'connection'
 export type ClawManageStage = 'select' | 'configure'
 
@@ -29,7 +28,7 @@ export type ClawAddImDialogProps = {
     platformCredential?: ClawImPlatformCredentialV1,
     options?: {
       channelId?: string
-      model?: ClawModel
+      model?: string
       workspaceRoot?: string
       enabled?: boolean
       im?: Partial<ClawImSettingsV1>
@@ -52,8 +51,31 @@ export type ClawInstallQrState = {
   status: 'idle' | 'loading' | 'showing' | 'success' | 'error'
   url: string
   deviceCode: string
+  userCode: string
   timeLeft: number
   error: string
+}
+
+export function formatClawInstallError(
+  message: string,
+  t: (k: string, opts?: Record<string, unknown>) => string
+): string {
+  const value = message.trim()
+  if (
+    /WeChat login bridge/i.test(value) ||
+    (/OpenClaw Gateway/i.test(value) &&
+    (/unavailable/i.test(value) ||
+      /not configured/i.test(value) ||
+      /DEEPSEEK_GUI_OPENCLAW_GATEWAY_URL/.test(value) ||
+      /requires/i.test(value))) ||
+    /^not found$/i.test(value) ||
+    /fetch failed/i.test(value) ||
+    /ECONNREFUSED/i.test(value) ||
+    /HTTP (401|404|503)/i.test(value)
+  ) {
+    return t('clawAddImWeixinBridgeMissing')
+  }
+  return value
 }
 
 export const CLAW_ADD_PROVIDER_OPTIONS: ClawAddProviderOption[] = [
@@ -67,6 +89,18 @@ export const CLAW_ADD_PROVIDER_OPTIONS: ClawAddProviderOption[] = [
       'clawAddImGuideFeishuOfficial1',
       'clawAddImGuideFeishuOfficial2',
       'clawAddImGuideFeishuOfficial3'
+    ]
+  },
+  {
+    id: 'weixin',
+    label: 'WeChat',
+    toneClass: 'bg-emerald-500/12 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200',
+    connectionMode: 'official-install-qr',
+    credentialHints: ['weixin.accountId'],
+    guideStepKeys: [
+      'clawAddImGuideWechat1',
+      'clawAddImGuideWechat2',
+      'clawAddImGuideWechat3'
     ]
   }
 ]
@@ -162,6 +196,8 @@ export function clawCredentialLabelKey(hint: string): string {
       return 'clawAddImCredentialFeishuAppId'
     case 'feishu.appSecret':
       return 'clawAddImCredentialFeishuAppSecret'
+    case 'weixin.accountId':
+      return 'clawAddImCredentialWeixinAccountId'
     default:
       return 'clawAddImCredentialGeneric'
   }
@@ -191,18 +227,20 @@ export function copyTextFallback(text: string): boolean {
 export function isOfficialInstallProvider(
   provider: ClawImProvider
 ): provider is ClawOfficialInstallProvider {
-  return provider === 'feishu'
+  return provider === 'feishu' || provider === 'weixin'
 }
 
 export function clawInstallTargetLabel(
   t: (k: string, opts?: Record<string, unknown>) => string,
   target: ClawInstallTarget
 ): string {
+  if (target === 'weixin') return t('clawAddImTargetWeixin')
   return target === 'lark' ? t('clawAddImTargetLark') : t('clawAddImTargetFeishu')
 }
 
 export function clawDefaultAgentName(target: ClawInstallTarget): string {
-  return target === 'lark' ? 'Lark Agent' : 'Feishu Agent'
+  if (target === 'weixin') return 'weixin agent'
+  return target === 'lark' ? 'lark agent' : 'feishu agent'
 }
 
 export function clawDefaultChannelWorkspacePreview(
@@ -211,11 +249,20 @@ export function clawDefaultChannelWorkspacePreview(
   platformCredential?: ClawImPlatformCredentialV1,
   channelId?: string
 ): string {
+  if (provider === 'weixin') {
+    const accountId = platformCredential?.kind === 'weixin'
+      ? platformCredential.accountId
+      : channelId
+    const workspaceId = accountId?.trim()
+      ? sanitizeWorkspaceSegment(accountId, 'account')
+      : '<account-id-or-channel-id>'
+    return `${DEFAULT_CLAW_WORKSPACE_ROOT}/${provider}/weixin/${workspaceId}`
+  }
   const domain = sanitizeWorkspaceSegment(
-    platformCredential?.domain || target,
+    platformCredential?.kind === 'feishu' ? platformCredential.domain : target,
     target === 'lark' ? 'lark' : 'feishu'
   )
-  const workspaceId = platformCredential?.appId?.trim()
+  const workspaceId = platformCredential?.kind === 'feishu' && platformCredential.appId.trim()
     ? sanitizeWorkspaceSegment(platformCredential.appId, 'app')
     : channelId?.trim()
       ? sanitizeWorkspaceSegment(channelId, 'channel')

@@ -1,8 +1,49 @@
-import type { AgentProviderId as SharedAgentProviderId } from '@shared/agent-catalog'
-
-export type AgentProviderId = SharedAgentProviderId
+import type {
+  CoreAttachmentContentResponseJson,
+  CoreAttachmentMetadataJson,
+  CoreAttachmentTextFallbackJson,
+  CoreMemoryRecordJson,
+  CoreRuntimeInfoJson,
+  CoreRuntimeToolDiagnosticsJson
+} from './kun-contract'
 
 export type ToolItemKind = 'tool_call' | 'command_execution' | 'file_change'
+
+export type AttachmentReference = {
+  id: string
+  name?: string
+  mimeType?: string
+  width?: number
+  height?: number
+  previewUrl?: string
+}
+
+export type RuntimeChildMetadata = {
+  parentThreadId: string
+  parentTurnId: string
+  childId: string
+  childLabel?: string
+  childStatus: 'queued' | 'running' | 'completed' | 'failed' | 'aborted'
+  childSeq: number
+}
+
+export type WebCitationSource = {
+  sourceId?: string
+  url?: string
+  title?: string
+  retrievedAt?: string
+}
+
+export type RuntimeDisclosureMetadata = {
+  displayText?: string
+  attachmentIds?: string[]
+  attachments?: AttachmentReference[]
+  activeSkillIds?: string[]
+  injectedMemoryIds?: string[]
+  skillInjectionBytes?: number
+  child?: RuntimeChildMetadata
+  sources?: WebCitationSource[]
+}
 
 export type UserInputOption = {
   label: string
@@ -34,11 +75,59 @@ export type NormalizedThread = {
   preview?: string
   latestTurnId?: string
   latestTurnStatus?: string
+  relation?: 'primary' | 'fork' | 'side'
+  parentThreadId?: string
   forkedFromThreadId?: string
   forkedFromTitle?: string
   forkedAt?: string
   forkedFromMessageCount?: number
   forkedFromTurnCount?: number
+  goal?: ThreadGoal | null
+  todos?: ThreadTodoList | null
+}
+
+export type ThreadGoalStatus =
+  | 'active'
+  | 'paused'
+  | 'blocked'
+  | 'usageLimited'
+  | 'budgetLimited'
+  | 'complete'
+
+export type ThreadGoal = {
+  threadId: string
+  objective: string
+  status: ThreadGoalStatus
+  tokenBudget?: number | null
+  tokensUsed: number
+  timeUsedSeconds: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type ThreadTodoStatus = 'pending' | 'in_progress' | 'completed'
+
+export type ThreadTodoSource = {
+  kind: 'plan'
+  planId: string
+  relativePath: string
+  ordinal: number
+  contentHash: string
+}
+
+export type ThreadTodoItem = {
+  id: string
+  content: string
+  status: ThreadTodoStatus
+  source?: ThreadTodoSource
+  createdAt: string
+  updatedAt: string
+}
+
+export type ThreadTodoList = {
+  threadId: string
+  items: ThreadTodoItem[]
+  updatedAt: string
 }
 
 export type RuntimeConnectionStatus = 'idle' | 'checking' | 'ready' | 'offline'
@@ -78,12 +167,56 @@ export type CompactionBlock = {
   messagesAfter?: number
 }
 
+export type ReviewTarget =
+  | { kind: 'uncommittedChanges' }
+  | { kind: 'baseBranch'; branch: string }
+  | { kind: 'commit'; sha: string }
+  | { kind: 'custom'; instructions: string }
+
+export type ReviewFinding = {
+  title: string
+  body: string
+  confidenceScore: number
+  priority: number
+  codeLocation: {
+    absoluteFilePath: string
+    lineRange: { start: number; end: number }
+  }
+}
+
+export type ReviewOutput = {
+  findings: ReviewFinding[]
+  overallCorrectness: 'patch is correct' | 'patch is incorrect'
+  overallExplanation: string
+  overallConfidenceScore: number
+}
+
+export type ReviewBlock = {
+  kind: 'review'
+  id: string
+  createdAt?: string
+  title: string
+  status: 'running' | 'success' | 'error'
+  target?: ReviewTarget
+  reviewText?: string
+  output?: ReviewOutput
+}
+
 export type ChatBlock =
-  | { kind: 'user'; id: string; createdAt?: string; text: string; modelLabel?: string }
+  | {
+      kind: 'user'
+      id: string
+      createdAt?: string
+      text: string
+      modelLabel?: string
+      managedBy?: 'claw'
+      meta?: RuntimeDisclosureMetadata
+    }
   | { kind: 'assistant'; id: string; createdAt?: string; text: string }
   | { kind: 'reasoning'; id: string; createdAt?: string; text: string }
   | ToolBlock
   | CompactionBlock
+  | ReviewBlock
   | { kind: 'system'; id: string; createdAt?: string; text: string }
   | {
       kind: 'approval'
@@ -94,6 +227,7 @@ export type ChatBlock =
       toolName?: string
       status: 'pending' | 'allowed' | 'denied' | 'error'
       errorMessage?: string
+      meta?: RuntimeDisclosureMetadata
     }
   | {
       kind: 'user_input'
@@ -110,6 +244,7 @@ export type ApprovalRequestPayload = {
   approvalId: string
   summary: string
   toolName?: string
+  meta?: RuntimeDisclosureMetadata
 }
 
 export type ToolEventPayload = {
@@ -122,6 +257,22 @@ export type ToolEventPayload = {
   meta?: Record<string, unknown>
 }
 
+export type RuntimeStatusEventPayload = {
+  kind:
+    | 'tool_result_upload_wait'
+    | 'tool_catalog_changed'
+    | 'tool_storm_suppressed'
+    | 'compaction_summary_fallback'
+  itemId: string
+  turnId?: string
+  createdAt?: string
+  message?: string
+  toolResultCount?: number
+  changeKind?: 'additive' | 'breaking'
+  toolName?: string
+  callId?: string
+}
+
 export type CompactionEventPayload = {
   itemId: string
   summary: string
@@ -131,6 +282,16 @@ export type CompactionEventPayload = {
   messagesBefore?: number
   messagesAfter?: number
   createdAt?: string
+}
+
+export type ReviewEventPayload = {
+  itemId: string
+  createdAt?: string
+  title: string
+  status: 'running' | 'success' | 'error'
+  target?: ReviewTarget
+  reviewText?: string
+  output?: ReviewOutput
 }
 
 export type UserInputRequestPayload = {
@@ -152,6 +313,8 @@ export type UserMessageEventPayload = {
   createdAt?: string
   text: string
   modelLabel?: string
+  managedBy?: 'claw'
+  meta?: RuntimeDisclosureMetadata
 }
 
 export type ThreadDeltaEvent = {
@@ -160,27 +323,53 @@ export type ThreadDeltaEvent = {
   seq?: number
 }
 
+/** Cumulative usage/cost for a Kun thread. */
+export type ThreadUsageSnapshot = {
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  cachedTokens: number
+  cacheMissTokens: number
+  cacheHitRate: number | null
+  totalTokens: number
+  costUsd: number
+  costCny: number | null
+  cacheSavingsUsd: number
+  cacheSavingsCny: number | null
+  tokenEconomySavingsTokens: number
+  tokenEconomySavingsUsd: number
+  tokenEconomySavingsCny: number | null
+  turns: number
+}
+
 export type ThreadEventSink = {
   onSeq(seq: number): void
   onDeltas(deltas: ThreadDeltaEvent[]): void
   onUserMessage(ev: UserMessageEventPayload): void
   onTool(ev: ToolEventPayload): void
   onCompaction(ev: CompactionEventPayload): void
+  onReview?(ev: ReviewEventPayload): void
   onApproval(req: ApprovalRequestPayload): void
   onUserInput(req: UserInputRequestPayload): void
   onUserInputStatus(ev: UserInputStatusPayload): void
+  onRuntimeStatus?(ev: RuntimeStatusEventPayload): void
+  onGoal(ev: { threadId: string; goal: ThreadGoal | null; cleared?: boolean; createdAt?: string }): void
+  onTodos?(ev: { threadId: string; todos: ThreadTodoList | null; cleared?: boolean; createdAt?: string }): void
   onTurnComplete(): void
   onError(err: Error): void
+  /** Optional: cumulative usage update for the thread. */
+  onUsage?(usage: ThreadUsageSnapshot): void
 }
 
 export interface AgentProvider {
-  readonly id: AgentProviderId
+  readonly id: 'kun'
   readonly displayName: string
   getCapabilities(): {
     interrupt: boolean
     stream: boolean
     approvals: boolean
     attachFiles: boolean
+    review?: boolean
   }
   connect(): Promise<void>
   listThreads(options?: ThreadListOptions): Promise<NormalizedThread[]>
@@ -192,19 +381,81 @@ export interface AgentProvider {
     latestTurnId?: string
     latestUserMessageId?: string
     turnDurationByUserId?: Record<string, number>
+    usage?: ThreadUsageSnapshot
+    goal?: ThreadGoal | null
+    todos?: ThreadTodoList | null
   }>
   sendUserMessage(
     threadId: string,
     text: string,
-    options?: { mode?: string; model?: string }
+    options?: {
+      mode?: string
+      model?: string
+      reasoningEffort?: string
+      displayText?: string
+      guiPlan?: {
+        operation: 'draft' | 'refine'
+        workspaceRoot: string
+        relativePath: string
+        planId: string
+        sourceRequest?: string
+        title?: string
+      }
+      attachmentIds?: string[]
+    }
   ): Promise<{ turnId: string; threadId: string; userMessageItemId?: string }>
+  reviewThread?(
+    threadId: string,
+    target: ReviewTarget,
+    options?: { model?: string }
+  ): Promise<{ turnId: string; threadId: string; userMessageItemId?: string; reviewItemId?: string }>
+  getRuntimeInfo?(): Promise<CoreRuntimeInfoJson>
+  getToolDiagnostics?(): Promise<CoreRuntimeToolDiagnosticsJson>
+  uploadAttachment?(input: {
+    name: string
+    mimeType?: string
+    dataBase64: string
+    textFallback?: CoreAttachmentTextFallbackJson
+    threadId?: string
+    workspace?: string
+  }): Promise<CoreAttachmentMetadataJson>
+  getAttachmentContent?(
+    attachmentId: string,
+    options?: { threadId?: string; workspace?: string }
+  ): Promise<CoreAttachmentContentResponseJson>
+  listMemories?(options?: { workspace?: string; includeDeleted?: boolean }): Promise<CoreMemoryRecordJson[]>
+  updateMemory?(
+    memoryId: string,
+    patch: { content?: string; tags?: string[]; confidence?: number; disabled?: boolean }
+  ): Promise<CoreMemoryRecordJson>
+  deleteMemory?(memoryId: string): Promise<CoreMemoryRecordJson>
   steerUserMessage?(threadId: string, turnId: string, text: string): Promise<void>
-  interruptTurn(threadId: string, turnId: string): Promise<void>
+  interruptTurn(threadId: string, turnId: string, options?: { discard?: boolean }): Promise<void>
   renameThread(threadId: string, title: string): Promise<void>
   archiveThread?(threadId: string, archived: boolean): Promise<void>
   deleteThread(threadId: string): Promise<void>
   compactThread?(threadId: string, reason?: string): Promise<void>
-  forkThread?(threadId: string): Promise<NormalizedThread>
+  getThreadGoal?(threadId: string): Promise<ThreadGoal | null>
+  setThreadGoal?(
+    threadId: string,
+    patch: { objective?: string; status?: ThreadGoalStatus; tokenBudget?: number | null }
+  ): Promise<ThreadGoal>
+  clearThreadGoal?(threadId: string): Promise<boolean>
+  getThreadTodos?(threadId: string): Promise<ThreadTodoList | null>
+  setThreadTodos?(
+    threadId: string,
+    todos: Array<{
+      id?: string
+      content: string
+      status: ThreadTodoStatus
+      source?: ThreadTodoSource
+    }>
+  ): Promise<ThreadTodoList>
+  clearThreadTodos?(threadId: string): Promise<boolean>
+  forkThread?(
+    threadId: string,
+    options?: { relation?: 'primary' | 'fork' | 'side'; title?: string }
+  ): Promise<NormalizedThread>
   resumeSession?(
     sessionId: string,
     options?: { model?: string; mode?: string }

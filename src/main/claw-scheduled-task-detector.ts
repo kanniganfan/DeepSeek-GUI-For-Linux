@@ -1,5 +1,9 @@
-import type { AppSettingsV1, ClawRunMode, ClawTaskV1 } from '../shared/app-settings'
-import { DEFAULT_CLAW_MODEL, getActiveAgentRuntimeSettings } from '../shared/app-settings'
+import type { AppSettingsV1, ScheduleRunMode, ScheduledTaskV1 } from '../shared/app-settings'
+import {
+  DEFAULT_SCHEDULE_MODEL,
+  DEFAULT_SCHEDULE_REASONING_EFFORT,
+  resolveKunRuntimeSettings
+} from '../shared/app-settings'
 
 const SCHEDULED_TASK_CANDIDATE_RE =
   /(?:提醒|定时|闹钟|通知|叫我|叫醒|稍后|之后|到点|分钟后|小时后|秒后|天后|明天|后天|今晚|later|remind|reminder|alarm|timer|schedule|scheduled|tomorrow|tonight|in\s+\d+\s+(?:seconds?|minutes?|hours?|days?|weeks?))/iu
@@ -158,7 +162,7 @@ function buildDetectionPrompt(now: Date): string {
 
 function detectionModel(model: string): string {
   const trimmed = model.trim()
-  return trimmed && trimmed !== DEFAULT_CLAW_MODEL ? trimmed : 'deepseek-v4-flash'
+  return trimmed && trimmed !== DEFAULT_SCHEDULE_MODEL ? trimmed : 'deepseek-v4-flash'
 }
 
 export function looksLikeClawScheduledTaskCandidate(text: string): boolean {
@@ -172,7 +176,7 @@ export async function detectClawScheduledTaskRequest(
   now = new Date()
 ): Promise<ParsedClawScheduledTaskRequest | null> {
   if (!looksLikeClawScheduledTaskCandidate(sourceText)) return null
-  const runtime = getActiveAgentRuntimeSettings(settings)
+  const runtime = resolveKunRuntimeSettings(settings)
   const apiKey = runtime.apiKey.trim()
   if (!apiKey) return null
   const response = await fetch(buildChatCompletionsUrl(runtime.baseUrl), {
@@ -203,14 +207,14 @@ export async function detectClawScheduledTaskRequest(
   return normalizeDetectedRequest(parseDetectionPayload(content), sourceText, now)
 }
 
-export function buildClawTaskFromDetectedRequest(options: {
+export function buildScheduledTaskFromDetectedRequest(options: {
   request: ParsedClawScheduledTaskRequest
   workspaceRoot: string
   model: string
-  mode: ClawRunMode
+  mode: ScheduleRunMode
   id: string
   now?: string
-}): ClawTaskV1 {
+}): ScheduledTaskV1 {
   const now = options.now ?? new Date().toISOString()
   return {
     id: options.id,
@@ -218,7 +222,8 @@ export function buildClawTaskFromDetectedRequest(options: {
     enabled: true,
     prompt: options.request.taskPrompt,
     workspaceRoot: options.workspaceRoot.trim(),
-    model: options.model.trim() || DEFAULT_CLAW_MODEL,
+    model: options.model.trim() || DEFAULT_SCHEDULE_MODEL,
+    reasoningEffort: DEFAULT_SCHEDULE_REASONING_EFFORT,
     mode: options.mode,
     schedule: {
       kind: 'at',

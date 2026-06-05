@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { parseUsageResponse } from './usage-response'
 
 export type ThreadUsageSummary = {
   inputTokens: number
@@ -9,6 +10,12 @@ export type ThreadUsageSummary = {
   cacheHitRate: number | null
   totalTokens: number
   costUsd: number
+  costCny: number | null
+  cacheSavingsUsd: number
+  cacheSavingsCny: number | null
+  tokenEconomySavingsTokens: number
+  tokenEconomySavingsUsd: number
+  tokenEconomySavingsCny: number | null
   turns: number
 }
 
@@ -26,14 +33,37 @@ function hasFiniteNumber(record: Record<string, unknown>, key: string): boolean 
   return typeof record[key] === 'number' && Number.isFinite(record[key])
 }
 
+function usageRate(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : null
+}
+
 export function formatCompactNumber(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
   return new Intl.NumberFormat().format(value)
 }
 
-export function formatCost(value: number): string {
-  return `$${value.toFixed(value >= 1 ? 2 : 4)}`
+function isChineseLocale(locale?: string): boolean {
+  const normalized = (locale ?? '').trim().toLowerCase()
+  return normalized === 'zh' || normalized.startsWith('zh-')
+}
+
+function fallbackLocale(): string {
+  return typeof navigator !== 'undefined' ? navigator.language : 'en'
+}
+
+function formatMoneyValue(value: number): string {
+  const safeValue = Number.isFinite(value) ? value : 0
+  return safeValue.toFixed(safeValue >= 1 ? 2 : 4)
+}
+
+export function formatCost(costUsd: number, locale = fallbackLocale(), costCny?: number | null): string {
+  if (isChineseLocale(locale)) {
+    const safeUsd = Number.isFinite(costUsd) ? costUsd : 0
+    const value = typeof costCny === 'number' && Number.isFinite(costCny) ? costCny : safeUsd * 7.2
+    return `￥${formatMoneyValue(value)}`
+  }
+  return `$${formatMoneyValue(costUsd)}`
 }
 
 export function formatPercent(value: number | null): string {
@@ -55,9 +85,9 @@ async function loadThreadCacheStats(threadId: string): Promise<CacheStats | null
     'GET'
   )
   if (!r.ok || !r.body.trim()) return null
-  const parsed = JSON.parse(r.body) as {
+  const parsed = parseUsageResponse<{
     turns?: Array<{ usage?: Record<string, unknown> | null }>
-  }
+  }>(r.body, 'thread detail')
   let hitTokens = 0
   let missTokens = 0
   let hasCacheTelemetry = false
@@ -69,10 +99,8 @@ async function loadThreadCacheStats(threadId: string): Promise<CacheStats | null
     const hasMiss = hasFiniteNumber(usage, 'prompt_cache_miss_tokens')
     if (!hasHit && !hasMiss) continue
     hasCacheTelemetry = true
-    const hit = usageNumber(usage.prompt_cache_hit_tokens)
-    const miss = hasMiss
-      ? usageNumber(usage.prompt_cache_miss_tokens)
-      : Math.max(usageNumber(usage.input_tokens) - hit, 0)
+    const hit = hasHit ? usageNumber(usage.prompt_cache_hit_tokens) : 0
+    const miss = hasMiss ? usageNumber(usage.prompt_cache_miss_tokens) : 0
     hitTokens += hit
     missTokens += miss
   }
@@ -87,9 +115,9 @@ export async function loadThreadUsage(threadId: string): Promise<ThreadUsageSumm
     loadThreadCacheStats(threadId).catch(() => null)
   ])
   if (!r.ok || !r.body.trim()) return null
-  const parsed = JSON.parse(r.body) as {
+  const parsed = parseUsageResponse<{
     buckets?: Array<Record<string, unknown>>
-  }
+  }>(r.body, 'thread usage')
   const bucket = parsed.buckets?.find((item) => {
     const candidates = [item.thread_id, item.key, item.id, item.label]
     return candidates.some((candidate) => candidate === threadId)
@@ -98,19 +126,45 @@ export async function loadThreadUsage(threadId: string): Promise<ThreadUsageSumm
   const inputTokens = usageNumber(bucket.input_tokens)
   const outputTokens = usageNumber(bucket.output_tokens)
   const reasoningTokens = usageNumber(bucket.reasoning_tokens)
-  const cachedTokens = cacheStats?.hitTokens ?? usageNumber(bucket.cached_tokens)
-  const cacheMissTokens = cacheStats?.missTokens ?? Math.max(inputTokens - cachedTokens, 0)
+  const bucketCacheHitRate = usageRate(bucket.cache_hit_rate)
+  const hasBucketCacheTelemetry = bucketCacheHitRate !== null
+  const cachedTokens = cacheStats
+    ? cacheStats.hitTokens
+    : hasBucketCacheTelemetry
+      ? usageNumber(bucket.cached_tokens)
+      : 0
+  const cacheMissTokens = cacheStats
+    ? cacheStats.missTokens
+    : hasBucketCacheTelemetry
+      ? usageNumber(bucket.cache_miss_tokens)
+      : 0
   const cacheTotal = cachedTokens + cacheMissTokens
-  const cacheHitRate =
-    cacheTotal > 0
-      ? cachedTokens / cacheTotal
-      : inputTokens > 0
-        ? cachedTokens / inputTokens
-        : null
+  const cacheHitRate = cacheStats
+    ? cacheTotal > 0 ? cachedTokens / cacheTotal : null
+    : bucketCacheHitRate
   const totalTokens = inputTokens + outputTokens
   const costUsd = usageNumber(bucket.cost_usd)
+  const costCny = hasFiniteNumber(bucket, 'cost_cny') ? usageNumber(bucket.cost_cny) : null
+  const cacheSavingsUsd = usageNumber(bucket.cache_savings_usd)
+  const cacheSavingsCny = hasFiniteNumber(bucket, 'cache_savings_cny') ? usageNumber(bucket.cache_savings_cny) : null
+  const tokenEconomySavingsTokens = usageNumber(bucket.token_economy_savings_tokens)
+  const tokenEconomySavingsUsd = usageNumber(bucket.token_economy_savings_usd)
+  const tokenEconomySavingsCny = hasFiniteNumber(bucket, 'token_economy_savings_cny')
+    ? usageNumber(bucket.token_economy_savings_cny)
+    : null
   const turns = usageNumber(bucket.turns)
-  if (totalTokens <= 0 && cachedTokens <= 0 && costUsd <= 0 && turns <= 0) return null
+  if (
+    totalTokens <= 0 &&
+    cachedTokens <= 0 &&
+    costUsd <= 0 &&
+    (costCny ?? 0) <= 0 &&
+    cacheSavingsUsd <= 0 &&
+    (cacheSavingsCny ?? 0) <= 0 &&
+    tokenEconomySavingsTokens <= 0 &&
+    tokenEconomySavingsUsd <= 0 &&
+    (tokenEconomySavingsCny ?? 0) <= 0 &&
+    turns <= 0
+  ) return null
   return {
     inputTokens,
     outputTokens,
@@ -120,6 +174,12 @@ export async function loadThreadUsage(threadId: string): Promise<ThreadUsageSumm
     cacheHitRate,
     totalTokens,
     costUsd,
+    costCny,
+    cacheSavingsUsd,
+    cacheSavingsCny,
+    tokenEconomySavingsTokens,
+    tokenEconomySavingsUsd,
+    tokenEconomySavingsCny,
     turns
   }
 }

@@ -7,12 +7,13 @@ import {
   Check,
   ChevronDown,
   Code2,
+  ClipboardList,
   Download,
   ExternalLink,
-  Gauge,
   FileEdit,
   FolderOpen,
   Globe2,
+  ListTodo,
   Loader2,
   RefreshCw,
   Terminal
@@ -20,22 +21,18 @@ import {
 import { useTranslation } from 'react-i18next'
 import { readPreferredEditorId, writePreferredEditorId } from '../../lib/editor-preferences'
 
-export type RightPanelMode = 'changes' | 'browser' | 'runtime' | 'file' | null
+export type RightPanelMode = 'todo' | 'changes' | 'browser' | 'file' | 'plan' | 'sdd-ai' | null
 
 type Props = {
   rightPanelMode: RightPanelMode
   onToggleRightPanelMode: (mode: Exclude<RightPanelMode, null>) => void
-  terminalPanelOpen: boolean
-  terminalPanelEnabled: boolean
-  onToggleTerminalPanel: () => void
+  planPanelEnabled?: boolean
 }
 
 export function WorkbenchTopBar({
   rightPanelMode,
   onToggleRightPanelMode,
-  terminalPanelOpen,
-  terminalPanelEnabled,
-  onToggleTerminalPanel
+  planPanelEnabled = false
 }: Props): ReactElement {
   const { t } = useTranslation(['common', 'settings'])
   const [editors, setEditors] = useState<EditorInfo[]>([])
@@ -46,9 +43,10 @@ export function WorkbenchTopBar({
   const [applyingGuiUpdate, setApplyingGuiUpdate] = useState(false)
   const editorMenuRef = useRef<HTMLDivElement>(null)
   const items = [
+    { mode: 'todo' as const, label: t('rightPanelTodo'), icon: ListTodo },
+    ...(planPanelEnabled ? [{ mode: 'plan' as const, label: t('rightPanelPlan'), icon: ClipboardList }] : []),
     { mode: 'changes' as const, label: t('rightPanelChanges'), icon: FileEdit },
-    { mode: 'browser' as const, label: t('rightPanelBrowser'), icon: Globe2 },
-    { mode: 'runtime' as const, label: t('rightPanelRuntime'), icon: Gauge }
+    { mode: 'browser' as const, label: t('rightPanelBrowser'), icon: Globe2 }
   ]
   const selectedEditor = useMemo(
     () => editors.find((editor) => editor.id === selectedEditorId) ?? editors[0],
@@ -59,18 +57,20 @@ export function WorkbenchTopBar({
     let cancelled = false
     if (typeof window.dsGui?.listEditors !== 'function') return
 
-    void window.dsGui.listEditors().then((result) => {
-      if (cancelled) return
-      const available = result.editors.filter((editor) => editor.available)
-      const stored = readPreferredEditorId()
-      const nextId =
-        stored && available.some((editor) => editor.id === stored)
-          ? stored
-          : result.defaultEditorId
-      setEditors(available)
-      setSelectedEditorId(nextId)
-      writePreferredEditorId(nextId)
-    })
+    void window.dsGui.listEditors()
+      .then((result) => {
+        if (cancelled) return
+        const available = result.editors.filter((editor) => editor.available)
+        const stored = readPreferredEditorId()
+        const nextId =
+          stored && available.some((editor) => editor.id === stored)
+            ? stored
+            : result.defaultEditorId
+        setEditors(available)
+        setSelectedEditorId(nextId)
+        writePreferredEditorId(nextId)
+      })
+      .catch(() => undefined)
 
     return () => {
       cancelled = true
@@ -95,7 +95,7 @@ export function WorkbenchTopBar({
     }
     const unsubscribe = window.dsGui.onGuiUpdateState(applyState)
     if (typeof window.dsGui?.getGuiUpdateState === 'function') {
-      void window.dsGui.getGuiUpdateState().then(applyState)
+      void window.dsGui.getGuiUpdateState().then(applyState).catch(() => undefined)
     }
     return unsubscribe
   }, [])
@@ -236,18 +236,18 @@ export function WorkbenchTopBar({
   }
 
   return (
-    <div className="chat-workbench-topbar ds-no-drag flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1">
+    <div className="chat-workbench-topbar ds-no-drag flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-1">
       {guiUpdateAction ? (
         <button
           type="button"
           onClick={() => void runGuiUpdateAction()}
           disabled={guiUpdateBusy}
-          className="inline-flex items-center gap-1.5 rounded-full border border-amber-300/75 bg-amber-50/92 px-3 py-1.5 text-[12.5px] font-semibold text-amber-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-700/70 dark:bg-amber-950/35 dark:text-amber-100 dark:hover:bg-amber-900/45"
+          className="chat-gui-update-button inline-flex items-center gap-1.5 rounded-full border border-amber-300/75 bg-amber-50/92 px-3 py-1.5 text-[12.5px] font-semibold text-amber-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-700/70 dark:bg-amber-950/35 dark:text-amber-100 dark:hover:bg-amber-900/45"
           aria-label={guiUpdateTitle}
           title={guiUpdateTitle}
         >
           {renderGuiUpdateIcon()}
-          <span className="max-w-[11rem] truncate">{guiUpdateLabel}</span>
+          <span className="chat-gui-update-label max-w-[11rem] truncate">{guiUpdateLabel}</span>
         </button>
       ) : null}
 
@@ -300,22 +300,6 @@ export function WorkbenchTopBar({
           </div>
         ) : null}
       </div>
-
-      <button
-        type="button"
-        onClick={onToggleTerminalPanel}
-        disabled={!terminalPanelEnabled}
-        className={`rounded-full border px-2.5 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)] transition disabled:cursor-not-allowed disabled:opacity-45 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${
-          terminalPanelOpen
-            ? 'border-ds-border-strong bg-white/70 text-ds-ink dark:bg-white/10'
-            : 'border-transparent bg-white/38 text-ds-faint opacity-90 hover:border-ds-border-muted hover:bg-white/55 hover:text-ds-ink hover:opacity-100 dark:bg-white/4 dark:hover:bg-white/8'
-        }`}
-        aria-label={terminalPanelEnabled ? t('terminalToggle') : t('terminalWorkspaceRequired')}
-        aria-pressed={terminalPanelOpen}
-        title={terminalPanelEnabled ? t('terminalToggle') : t('terminalWorkspaceRequired')}
-      >
-        <Terminal className="h-4 w-4" strokeWidth={1.75} />
-      </button>
 
       {items.map((item) => {
         const active = rightPanelMode === item.mode

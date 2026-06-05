@@ -23,6 +23,7 @@ import {
   createWorkspaceFile,
   deleteWorkspaceEntry,
   listWorkspaceDirectory,
+  readClipboardImage,
   readWorkspaceImage,
   readWorkspaceFile,
   renameWorkspaceEntry,
@@ -175,6 +176,49 @@ describe('workspace-service boundary checks', () => {
     expect(result.path).toContain(join(workspaceRoot, 'img'))
     expect(result.markdownPath.startsWith('../img/pasted-image-')).toBe(true)
     await expect(readFile(result.path)).resolves.toEqual(Buffer.from('fake-png-bytes'))
+  })
+
+  it('reads clipboard images as PNG base64 without writing workspace files', async () => {
+    vi.mocked(clipboard.readImage).mockReturnValue({
+      isEmpty: () => false,
+      toPNG: () => Buffer.from('clipboard-png-bytes'),
+      getSize: () => ({ width: 12, height: 8 })
+    } as Electron.NativeImage)
+
+    const result = await readClipboardImage()
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.name).toMatch(/^pasted-image-.+\.png$/)
+    expect(result.mimeType).toBe('image/png')
+    expect(result.dataBase64).toBe(Buffer.from('clipboard-png-bytes').toString('base64'))
+    expect(result.byteSize).toBe(Buffer.byteLength('clipboard-png-bytes'))
+    expect(result.width).toBe(12)
+    expect(result.height).toBe(8)
+  })
+
+  it('saves SDD pasted clipboard images into .kunsdd/img with draft-relative markdown', async () => {
+    const currentFilePath = join(workspaceRoot, '.kunsdd', 'draft', 'draft-1', 'requirement.md')
+    await mkdir(join(workspaceRoot, '.kunsdd', 'draft', 'draft-1'), { recursive: true })
+    await writeFile(currentFilePath, '# requirement', 'utf8')
+
+    vi.mocked(clipboard.readImage).mockReturnValue({
+      isEmpty: () => false,
+      toPNG: () => Buffer.from('sdd-png-bytes')
+    } as Electron.NativeImage)
+
+    const result = await saveWorkspaceClipboardImage({
+      workspaceRoot,
+      currentFilePath,
+      imageDirectory: '.kunsdd/img'
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.path).toContain(join(workspaceRoot, '.kunsdd', 'img'))
+    expect(result.markdownPath.startsWith('../../img/pasted-image-')).toBe(true)
+    await expect(readFile(result.path)).resolves.toEqual(Buffer.from('sdd-png-bytes'))
   })
 
   it('reads supported workspace images as data URLs', async () => {

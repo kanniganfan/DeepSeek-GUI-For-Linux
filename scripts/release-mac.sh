@@ -83,8 +83,11 @@ build_mac_arch() {
   mkdir -p "${output_dir}" "$(dirname "${log_file}")"
   cyan "  ${arch}: building dmg + zip -> ${output_dir}"
   DEEPSEEK_GUI_DIST_DIR="${output_dir}" \
-    npx --yes electron-builder@26.8.1 --config electron-builder.config.cjs --publish never --mac dmg zip "--${arch}" \
+    npx --yes electron-builder@26.8.1 --config electron-builder.config.cjs --publish never --mac dmg "--${arch}" \
     >"${log_file}" 2>&1
+  DEEPSEEK_GUI_DIST_DIR="${output_dir}" \
+    node "${ROOT}/scripts/zip-mac-app.cjs" "${arch}" \
+    >>"${log_file}" 2>&1
 }
 
 copy_mac_arch_artifacts() {
@@ -218,12 +221,38 @@ collect() {
   done
 }
 
+collect_optional() {
+  local label="$1"
+  shift
+  local matched=()
+  local pattern file
+
+  shopt -s nullglob
+  for pattern in "$@"; do
+    for file in ${pattern}; do
+      [[ -f "${file}" ]] || continue
+      matched+=("${file}")
+    done
+  done
+  shopt -u nullglob
+
+  if [[ ${#matched[@]} -eq 0 ]]; then
+    yellow "  • ${label}: none"
+    return
+  fi
+
+  for file in "${matched[@]}"; do
+    ASSETS+=("${file}")
+    green "  ✓ ${label}: ${file}"
+  done
+}
+
 # artifactName: ${productName}-${version}-mac-${arch}.dmg|zip
 collect "macOS arm64 dmg" "dist/DeepSeek-GUI-*-mac-arm64.dmg"
 collect "macOS x64 dmg" "dist/DeepSeek-GUI-*-mac-x64.dmg"
 collect "macOS arm64 zip" "dist/DeepSeek-GUI-*-mac-arm64.zip"
 collect "macOS x64 zip" "dist/DeepSeek-GUI-*-mac-x64.zip"
-collect "macOS blockmap" "dist/DeepSeek-GUI-*-mac-*.zip.blockmap"
+collect_optional "macOS blockmap" "dist/DeepSeek-GUI-*-mac-*.zip.blockmap"
 
 upload_github_assets() {
   local tag="$1"
