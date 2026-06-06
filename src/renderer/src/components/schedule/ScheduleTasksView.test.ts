@@ -4,6 +4,8 @@ import {
   filterScheduledTasks,
   newScheduledTask,
   scheduleTaskSummary,
+  scheduledTaskLastThreadId,
+  scheduledTaskResultIsExpandable,
   validateScheduledTaskDraft
 } from './ScheduleTasksView'
 
@@ -92,5 +94,17 @@ describe('ScheduleTasksView helpers', () => {
     expect(scheduleTaskSummary(task('manual', {
       schedule: { kind: 'manual', everyMinutes: 60, timeOfDay: '09:00', atTime: '' }
     }), t)).toBe('scheduleManual')
+  })
+
+  it('normalizes the task thread link shown in the list UI', () => {
+    expect(scheduledTaskLastThreadId(task('never-ran'))).toBe('')
+    expect(scheduledTaskLastThreadId(task('ran', { lastThreadId: '  thr_123  ' }))).toBe('thr_123')
+  })
+
+  it('detects when a task result needs expansion', () => {
+    expect(scheduledTaskResultIsExpandable('')).toBe(false)
+    expect(scheduledTaskResultIsExpandable('short result')).toBe(false)
+    expect(scheduledTaskResultIsExpandable('line 1\nline 2\nline 3\nline 4\nline 5\nline 6')).toBe(true)
+    expect(scheduledTaskResultIsExpandable('x'.repeat(361))).toBe(true)
   })
 })

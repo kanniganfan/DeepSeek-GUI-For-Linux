@@ -10,7 +10,7 @@ import {
   type AppSettingsV1,
   type ScheduledTaskV1
 } from '../shared/app-settings'
-import { ScheduleRuntime, computeScheduleNextRunAt } from './schedule-runtime'
+import { ScheduleRuntime, computeScheduleNextRunAt, scheduledThreadTitle } from './schedule-runtime'
 
 function makeTask(patch: Partial<ScheduledTaskV1> = {}): ScheduledTaskV1 {
   const schedule = {
@@ -119,6 +119,12 @@ describe('ScheduleRuntime', () => {
     }), from)).toBe('2026-06-03T09:00:00.000+08:00')
   })
 
+  it('builds compact Scheduled task thread titles from task names', () => {
+    expect(scheduledThreadTitle('每日A股行情盘')).toBe('[Scheduled task] 每日A股')
+    expect(scheduledThreadTitle('Task 1')).toBe('[Scheduled task] Task')
+    expect(scheduledThreadTitle('   ')).toBe('[Scheduled task]')
+  })
+
   it('creates detected reminder requests into top-level schedule settings', async () => {
     const future = '2099-06-03T09:00:00.000Z'
     vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -184,13 +190,18 @@ describe('ScheduleRuntime', () => {
       turnId: 'turn_1'
     })
 
-    const titlePatch = runtimeRequest.mock.calls.find(([, path, init]) =>
-      path === '/v1/threads/thr_1' && init?.method === 'PATCH'
+    const createRequest = runtimeRequest.mock.calls.find(([, path, init]) =>
+      path === '/v1/threads' && init?.method === 'POST'
     )?.[2]?.body
     const turnRequest = runtimeRequest.mock.calls.find(([, path]) =>
       path === '/v1/threads/thr_1/turns'
     )?.[2]?.body
-    expect(JSON.parse(String(titlePatch))).toEqual({ title: '[Scheduled Task] Task 1' })
+    expect(JSON.parse(String(createRequest))).toMatchObject({
+      title: '[Scheduled task] Task',
+      workspace: '/tmp/workspace',
+      model: 'auto',
+      mode: 'agent'
+    })
     expect(JSON.parse(String(turnRequest))).toMatchObject({
       model: 'auto',
       reasoningEffort: 'max'

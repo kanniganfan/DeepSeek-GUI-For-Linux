@@ -17,6 +17,11 @@ import { COMPACT_RESOURCE_FILE_NAMES } from './builtin-tool-types.js'
 
 type SpawnSyncLike = typeof spawnSync
 type SpawnLike = typeof spawn
+const POWERSHELL_UTF8_OUTPUT_PREAMBLE = [
+  '$OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  '[Console]::OutputEncoding = $OutputEncoding',
+  'try { [Console]::InputEncoding = $OutputEncoding } catch {}'
+].join('; ')
 
 function firstLookupResult(
   lookup: SpawnSyncLike,
@@ -189,8 +194,6 @@ export function shellConfig(
   fileExists: (path: string) => boolean = existsSync
 ): ShellConfig {
   if (platform === 'win32') {
-    const bash = firstLookupResult(lookup, 'where', ['bash.exe'])
-    if (bash) return { shell: bash, args: ['-lc'] }
     const pwsh = firstLookupResult(lookup, 'where', ['pwsh.exe'])
     if (pwsh) {
       return {
@@ -205,6 +208,8 @@ export function shellConfig(
         args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command']
       }
     }
+    const bash = firstLookupResult(lookup, 'where', ['bash.exe'])
+    if (bash) return { shell: bash, args: ['-lc'] }
     return { shell: 'cmd.exe', args: ['/d', '/s', '/c'] }
   }
   if (fileExists('/bin/bash')) return { shell: '/bin/bash', args: ['-lc'] }
@@ -231,6 +236,17 @@ export function shellRuntimeInfo(config: ShellConfig = shellConfig()): ShellRunt
     name,
     syntax: shellSyntaxHint(name)
   }
+}
+
+export function shellCommandArgs(config: ShellConfig, command: string): string[] {
+  const name = shellDisplayName(config.shell)
+  if (name === 'pwsh' || name === 'powershell') {
+    const baseArgs = config.args.filter((arg) => arg.toLowerCase() !== '-command')
+    const encodedCommand = Buffer.from(`${POWERSHELL_UTF8_OUTPUT_PREAMBLE}\n${command}`, 'utf16le')
+      .toString('base64')
+    return [...baseArgs, '-EncodedCommand', encodedCommand]
+  }
+  return [...config.args, command]
 }
 
 export function shellRuntimeInstruction(config: ShellConfig = shellConfig()): string {

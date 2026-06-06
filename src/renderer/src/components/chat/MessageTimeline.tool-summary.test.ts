@@ -235,11 +235,11 @@ describe('MessageTimeline Kun runtime metadata smoke', () => {
     expect(html).toContain('Sources 1')
   })
 
-  it('keeps running tool calls as a waiting row instead of expanding details', () => {
+  it('expands running tool calls so partial details stay visible', () => {
     const block: ChatBlock = toolBlock({
       summary: 'read: file',
       status: 'running',
-      detail: 'full tool arguments that should stay collapsed while running',
+      detail: 'partial tool output while running',
       meta: { toolName: 'read' },
       filePath: '/tmp/readme.md'
     })
@@ -257,14 +257,15 @@ describe('MessageTimeline Kun runtime metadata smoke', () => {
     expect(html).toContain('/tmp/readme.md')
     expect(html).not.toContain('ds-work-logo')
     expect(html).toContain('ds-shiny-text')
-    expect(html).not.toContain('full tool arguments')
+    expect(html).toContain('partial tool output while running')
+    expect(html).toContain('ds-process-file-reference')
   })
 
-  it('keeps active reasoning collapsed as shiny status text', () => {
+  it('expands active reasoning so the current process is visible', () => {
     const block: ChatBlock = {
       kind: 'reasoning',
       id: 'live-reasoning',
-      text: 'private model thought'
+      text: 'current reasoning summary'
     }
 
     const html = renderToStaticMarkup(
@@ -278,7 +279,7 @@ describe('MessageTimeline Kun runtime metadata smoke', () => {
 
     expect(html).toContain('ds-shiny-text')
     expect(html).not.toContain('ds-work-logo')
-    expect(html).not.toContain('private model thought')
+    expect(html).toContain('current reasoning summary')
   })
 
   it('keeps same-batch tool calls collapsed by default', () => {

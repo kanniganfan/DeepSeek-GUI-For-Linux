@@ -417,12 +417,12 @@ textarea {
 
 .ds-chat-composer {
   overflow: visible;
-  border-radius: 32px;
+  border-radius: 24px;
   background: rgba(255, 255, 255, 0.97);
   border-color: rgba(15, 23, 42, 0.1);
   box-shadow:
-    0 16px 46px rgba(15, 23, 42, 0.08),
-    0 4px 14px rgba(15, 23, 42, 0.045);
+    0 12px 34px rgba(15, 23, 42, 0.07),
+    0 3px 10px rgba(15, 23, 42, 0.04);
 }
 
 .ds-chat-composer::before,
@@ -434,8 +434,8 @@ textarea {
   border-color: rgba(15, 23, 42, 0.18);
   box-shadow:
     0 0 0 3px rgba(15, 23, 42, 0.035),
-    0 18px 52px rgba(15, 23, 42, 0.1),
-    0 5px 16px rgba(15, 23, 42, 0.055);
+    0 14px 40px rgba(15, 23, 42, 0.09),
+    0 4px 12px rgba(15, 23, 42, 0.05);
 }
 
 [data-theme='dark'] .ds-chat-composer {
@@ -456,7 +456,7 @@ textarea {
 
 .ds-composer-toolbar {
   border-top: 1px solid rgba(15, 23, 42, 0.065);
-  padding-top: 0.5rem;
+  padding-top: 0.375rem;
 }
 
 [data-theme='dark'] .ds-composer-toolbar {
@@ -2005,8 +2005,22 @@ textarea {
   container-type: inline-size;
 }
 
+.chat-topbar {
+  margin-top: 0.35rem;
+  min-height: 40px;
+  border-radius: 18px;
+}
+
+.ds-message-timeline-content {
+  gap: 1.25rem;
+  padding-top: 1rem;
+  padding-bottom: 1.25rem;
+}
+
 .chat-topbar-grid {
   grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem;
+  padding-block: 0.35rem;
 }
 
 .chat-topbar-session {
@@ -2047,6 +2061,15 @@ textarea {
 }
 
 @container (max-width: 760px) {
+  .chat-topbar {
+    margin-top: 0.2rem;
+    min-height: 36px;
+  }
+
+  .chat-topbar-grid {
+    padding-block: 0.25rem;
+  }
+
   .session-meta-usage,
   .session-meta-usage-separator {
     display: none;
@@ -2054,6 +2077,63 @@ textarea {
 
   .chat-connection-status {
     max-width: 150px;
+  }
+}
+
+@media (max-height: 820px) {
+  .ds-stage-inset {
+    padding-inline: clamp(0.5rem, calc((100% - 54rem) / 2 + 0.75rem), 2.5rem);
+  }
+
+  .ds-chat-column-inset {
+    padding-inline: clamp(0.5rem, calc((100% - 48rem) / 2 + 0.75rem), 1.5rem);
+  }
+
+  .ds-message-timeline-content {
+    gap: 0.875rem;
+    padding-top: 0.5rem;
+    padding-bottom: 0.75rem;
+  }
+
+  .chat-topbar {
+    margin-top: 0.2rem;
+    min-height: 36px;
+  }
+
+  .chat-topbar-grid {
+    padding-block: 0.25rem;
+  }
+
+  .ds-chat-stage .ds-floating-composer {
+    padding-bottom: 0.5rem;
+  }
+
+  .ds-chat-composer {
+    border-radius: 20px;
+  }
+
+  .ds-chat-composer textarea {
+    min-height: 32px;
+  }
+
+  .ds-chat-composer .ds-composer-toolbar {
+    min-height: 2rem;
+    padding-top: 0.25rem;
+  }
+
+  .ds-chat-composer .ds-composer-model-picker {
+    height: 2rem;
+  }
+
+  .ds-chat-composer .ds-composer-toolbar > div:first-child > button,
+  .ds-chat-composer .ds-composer-toolbar > div:last-child > button {
+    height: 2rem;
+    width: 2rem;
+  }
+
+  .ds-composer-footer {
+    margin-top: 0.25rem;
+    min-height: 1.5rem;
   }
 }
 

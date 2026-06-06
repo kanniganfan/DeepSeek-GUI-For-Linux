@@ -32,7 +32,7 @@ export function useComposerDraft({ input, canCompose }: UseComposerDraftOptions)
 
     el.style.height = '0px'
     const nextHeight = Math.min(el.scrollHeight, 176)
-    const minHeight = 44
+    const minHeight = 36
     el.style.height = `${Math.max(nextHeight, minHeight)}px`
     el.style.overflowY = el.scrollHeight > 176 ? 'auto' : 'hidden'
   }, [])

@@ -21,6 +21,7 @@ import {
 import {
   detectImageMimeType,
   resolveExecutable,
+  shellCommandArgs,
   shellRuntimeInfo,
   spawnCapture,
   terminateSpawnTree,
@@ -133,7 +134,7 @@ export function createLocalBashOperations(): BashLocalToolOperations {
   return {
     exec: async (command, cwd, options) => {
       const { shell, args, name } = shellRuntimeInfo()
-      const child = spawn(shell, [...args, command], {
+      const child = spawn(shell, shellCommandArgs({ shell, args }, command), {
         cwd,
         env: process.env,
         detached: process.platform !== 'win32',

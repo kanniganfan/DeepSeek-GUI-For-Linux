@@ -45,10 +45,11 @@ import {
 
 export { computeScheduleNextRunAt } from './schedule-runtime-helpers'
 
-function scheduledThreadTitle(settings: AppSettingsV1, title: string): string {
-  const tag = settings.locale === 'zh' ? '定时任务' : 'Scheduled Task'
+export function scheduledThreadTitle(title: string): string {
   const trimmed = title.trim()
-  return trimmed ? `[${tag}] ${trimmed}` : `[${tag}]`
+  const prefix = '[Scheduled task]'
+  const suffix = Array.from(trimmed).slice(0, 4).join('')
+  return suffix ? `${prefix} ${suffix}` : prefix
 }
 
 export class ScheduleRuntime {
@@ -330,7 +331,7 @@ export class ScheduleRuntime {
       const settings = await this.deps.store.load()
       const result = await this.runPrompt(settings, {
         prompt: task.prompt,
-        title: scheduledThreadTitle(settings, task.title),
+        title: scheduledThreadTitle(task.title),
         workspaceRoot: task.workspaceRoot || this.resolveDefaultWorkspaceRoot(settings),
         model: task.model,
         reasoningEffort: task.reasoningEffort,
@@ -428,17 +429,15 @@ export class ScheduleRuntime {
     const model = normalizeTaskModel(options.model) ?? (settings.agents.kun.model.trim() || DEFAULT_SCHEDULE_MODEL)
     const create = await this.deps.runtimeRequest(settings, '/v1/threads', {
       method: 'POST',
-      body: JSON.stringify({ workspace, model, mode: options.mode })
+      body: JSON.stringify({
+        workspace,
+        model,
+        mode: options.mode,
+        ...(options.title.trim() ? { title: options.title.trim() } : {})
+      })
     })
     if (!create.ok) return { ok: false, message: runtimeErrorMessage(create, 'Failed to create thread.') }
     const thread = JSON.parse(create.body) as ThreadRecordJson
-
-    if (options.title.trim()) {
-      void this.deps.runtimeRequest(settings, `/v1/threads/${encodeURIComponent(thread.id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ title: options.title.trim() })
-      })
-    }
 
     const turnBody: Record<string, unknown> = {
       prompt: buildScheduleRuntimePrompt(settings, options.prompt),

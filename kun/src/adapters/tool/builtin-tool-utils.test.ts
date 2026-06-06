@@ -5,6 +5,7 @@ import {
   normalizeToolPath,
   resolveExecutable,
   shellConfig,
+  shellCommandArgs,
   shellDisplayName,
   shellRuntimeInfo,
   shellRuntimeInstruction,
@@ -23,21 +24,31 @@ function lookup(results: Record<string, string>) {
 }
 
 describe('shellConfig', () => {
-  it('uses Git Bash on Windows when bash.exe is available', () => {
+  it('prefers PowerShell on Windows even when Git Bash is available', () => {
+    expect(shellConfig('win32', lookup({
+      'where pwsh.exe': 'C:\\Program Files\\PowerShell\\7\\pwsh.exe\r\n',
+      'where bash.exe': 'C:\\Program Files\\Git\\bin\\bash.exe\r\n'
+    }))).toEqual({
+      shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+      args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command']
+    })
+  })
+
+  it('falls back to Windows PowerShell when pwsh is unavailable', () => {
+    expect(shellConfig('win32', lookup({
+      'where powershell.exe': 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\r\n'
+    }))).toEqual({
+      shell: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command']
+    })
+  })
+
+  it('falls back to Git Bash on Windows when PowerShell is unavailable', () => {
     expect(shellConfig('win32', lookup({
       'where bash.exe': 'C:\\Program Files\\Git\\bin\\bash.exe\r\n'
     }))).toEqual({
       shell: 'C:\\Program Files\\Git\\bin\\bash.exe',
       args: ['-lc']
-    })
-  })
-
-  it('falls back to PowerShell on Windows when Bash is unavailable', () => {
-    expect(shellConfig('win32', lookup({
-      'where pwsh.exe': 'C:\\Program Files\\PowerShell\\7\\pwsh.exe\r\n'
-    }))).toEqual({
-      shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
-      args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command']
     })
   })
 
@@ -102,6 +113,31 @@ describe('shell runtime metadata', () => {
     })
     expect(shellRuntimeInstruction({ shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', args: ['-Command'] }))
       .toContain('PowerShell syntax')
+  })
+
+  it('runs PowerShell commands through a UTF-8 output preamble', () => {
+    const args = shellCommandArgs(
+      {
+        shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+        args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command']
+      },
+      'Write-Output "测试"'
+    )
+
+    expect(args.slice(0, -1)).toEqual([
+      '-NoLogo',
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand'
+    ])
+    const script = Buffer.from(args.at(-1) ?? '', 'base64').toString('utf16le')
+    expect(script).toContain('[Console]::OutputEncoding = $OutputEncoding')
+    expect(script).toContain('Write-Output "测试"')
+  })
+
+  it('keeps non-PowerShell command arguments unchanged', () => {
+    expect(shellCommandArgs({ shell: '/bin/bash', args: ['-lc'] }, 'echo hi')).toEqual(['-lc', 'echo hi'])
   })
 })
 

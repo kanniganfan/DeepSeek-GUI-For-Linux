@@ -1157,7 +1157,7 @@ export function FloatingComposer({
   return (
     <div className={compact
       ? 'ds-floating-composer pointer-events-auto w-full pb-0 pt-0'
-      : 'ds-floating-composer ds-chat-column-inset pointer-events-auto w-full max-w-4xl pb-5 pt-1'}
+      : 'ds-floating-composer ds-chat-column-inset pointer-events-auto w-full max-w-4xl pb-3 pt-0'}
     >
       <FloatingComposerQueuedMessages
         messages={queuedMessages}
@@ -1481,7 +1481,7 @@ export function FloatingComposer({
         ) : null}
 
         <div
-          className={`ds-composer-shell ds-chat-composer ds-frosted flex flex-col gap-2 px-4 pb-3 pt-3 transition ${
+          className={`ds-composer-shell ds-chat-composer ds-frosted flex flex-col gap-1 px-3 pb-2 pt-2 transition ${
             draft.focused ? 'ds-chat-composer-focus' : ''
           } ${compact ? 'rounded-[24px] px-3 py-2 shadow-none' : ''}`}
           onPaste={handleComposerPaste}
@@ -1491,9 +1491,9 @@ export function FloatingComposer({
           <textarea
             ref={draft.textareaRef}
             rows={1}
-            className={`ds-no-drag block min-w-0 resize-none break-words bg-transparent px-1 py-1 text-[15px] leading-[1.55] text-ds-ink placeholder:text-ds-faint focus:outline-none [overflow-wrap:anywhere] ${
+            className={`ds-no-drag block min-w-0 resize-none break-words bg-transparent px-1 py-0.5 text-[15px] leading-[1.45] text-ds-ink placeholder:text-ds-faint focus:outline-none [overflow-wrap:anywhere] ${
               canCompose ? '' : 'opacity-80'
-            } ${compact ? 'text-[14px]' : 'min-h-[54px]'}`}
+            } ${compact ? 'text-[14px]' : 'min-h-[40px]'}`}
             placeholder={placeholder}
             value={input}
             disabled={!canCompose}
@@ -1590,7 +1590,7 @@ export function FloatingComposer({
             </div>
           ) : null}
           <div
-            className={`ds-composer-toolbar flex min-h-10 items-center gap-3 ${
+            className={`ds-composer-toolbar flex min-h-9 items-center gap-2 ${
               showToolbarStartControls ? 'justify-between' : 'justify-end'
             }`}
           >
@@ -1704,12 +1704,12 @@ export function FloatingComposer({
         </div>
       </div>
       {compact ? null : (
-        <div className="ds-composer-footer mt-2 flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4">
+        <div className="ds-composer-footer mt-1 flex min-h-7 flex-wrap items-center justify-between gap-x-2.5 gap-y-1.5 px-3">
           <div className="ds-composer-footer-left flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <GitBranchPicker workspaceRoot={effectiveWorkspaceRoot} />
             {showThreadUsageFooter ? (
               <div
-                className="ds-composer-usage ds-no-drag inline-flex min-h-8 max-w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 overflow-visible rounded-lg border border-ds-border-muted bg-ds-card/72 px-2.5 py-1 text-[12.5px] font-medium leading-5 text-ds-muted shadow-sm"
+                className="ds-composer-usage ds-no-drag inline-flex min-h-7 max-w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 overflow-visible rounded-lg border border-ds-border-muted bg-ds-card/72 px-2.5 py-0.5 text-[12.5px] font-medium leading-5 text-ds-muted shadow-sm"
                 title={
                   threadUsage
                     ? t('sessionUsageDetailsTitle', {
@@ -1783,7 +1783,7 @@ export function FloatingComposer({
             ) : null}
           </div>
           {footerHint ? (
-            <div className="ds-composer-footer-hint min-w-0 flex-1 text-right text-[13.5px] font-medium text-ds-faint">
+            <div className="ds-composer-footer-hint min-w-0 flex-1 text-right text-[12.5px] font-medium text-ds-faint">
               <span className="block truncate">{footerHint}</span>
             </div>
           ) : null}

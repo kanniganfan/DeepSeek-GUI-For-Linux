@@ -89,6 +89,20 @@ describe('upstream model picker list', () => {
 
   it('falls back to configured model ids when upstream cannot be queried', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'deepseek-gui-models-'))
+    await mkdir(dataDir, { recursive: true })
+    await writeFile(
+      join(dataDir, 'config.json'),
+      JSON.stringify({
+        models: {
+          profiles: {
+            'deepseek-v4-flash': {
+              aliases: ['deepseek-chat', 'deepseek-reasoner']
+            }
+          }
+        }
+      }),
+      'utf8'
+    )
     const result = await fetchUpstreamModelIds(settings(dataDir, 'local-only-model'), '')
 
     expect(result).toMatchObject({ ok: true })
@@ -100,6 +114,11 @@ describe('upstream model picker list', () => {
           providerId: 'custom-provider',
           label: 'Custom Provider',
           modelIds: expect.arrayContaining(['custom-provider-model'])
+        }),
+        expect.objectContaining({
+          providerId: 'deepseek',
+          label: 'DeepSeek',
+          modelIds: expect.arrayContaining(['deepseek-chat', 'deepseek-reasoner'])
         })
       ]))
     }

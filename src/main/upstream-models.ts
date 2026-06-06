@@ -27,7 +27,7 @@ export async function fetchUpstreamModelIds(
   apiKey: string
 ): Promise<FetchUpstreamModelsResult> {
   const configuredModelIds = await readConfiguredKunModelIds(settings)
-  const configuredGroups = readConfiguredModelGroups(settings)
+  const configuredGroups = await readConfiguredModelGroups(settings)
   const key = apiKey.trim()
   if (!key) {
     return modelListOrError(configuredModelIds, configuredGroups, 'Missing API key; cannot query upstream /v1/models.')
@@ -121,7 +121,7 @@ function modelListOrError(
     : { ok: false, message }
 }
 
-function readConfiguredModelGroups(settings: AppSettingsV1): ModelProviderModelGroup[] {
+async function readConfiguredModelGroups(settings: AppSettingsV1): Promise<ModelProviderModelGroup[]> {
   const groups: ModelProviderModelGroup[] = []
   for (const provider of getModelProviderSettings(settings).providers) {
     if (provider.models.length === 0) continue
@@ -131,7 +131,10 @@ function readConfiguredModelGroups(settings: AppSettingsV1): ModelProviderModelG
       modelIds: provider.models
     })
   }
-  return mergeModelGroups(groups)
+  return mergeModelGroups([
+    ...groups,
+    ...(await readConfiguredProfileAliasGroups(settings, groups))
+  ])
 }
 
 function mergeModelGroups(groups: readonly ModelProviderModelGroup[]): ModelProviderModelGroup[] {
@@ -168,6 +171,60 @@ function modelIdsFromProfiles(profiles: Record<string, unknown>): string[] {
     }
   }
   return ids
+}
+
+async function readConfiguredProfileAliasGroups(
+  settings: AppSettingsV1,
+  providerGroups: readonly ModelProviderModelGroup[]
+): Promise<ModelProviderModelGroup[]> {
+  const runtime = resolveKunRuntimeSettings(settings)
+  const configPath = join(expandHome(runtime.dataDir), 'config.json')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await readFile(configPath, 'utf8')) as unknown
+  } catch {
+    return []
+  }
+  const root = objectValue(parsed)
+  const models = objectValue(root.models)
+  const contextCompaction = objectValue(root.contextCompaction)
+  const aliasesByModel = new Map<string, string[]>()
+  collectModelProfileAliases(aliasesByModel, objectValue(contextCompaction.modelProfiles))
+  collectModelProfileAliases(aliasesByModel, objectValue(models.profiles))
+
+  const aliasGroups: ModelProviderModelGroup[] = []
+  for (const group of providerGroups) {
+    const aliases: string[] = []
+    for (const modelId of group.modelIds) {
+      aliases.push(...(aliasesByModel.get(modelId.trim()) ?? []))
+    }
+    if (aliases.length === 0) continue
+    aliasGroups.push({
+      providerId: group.providerId,
+      label: group.label,
+      modelIds: aliases
+    })
+  }
+  return aliasGroups
+}
+
+function collectModelProfileAliases(
+  target: Map<string, string[]>,
+  profiles: Record<string, unknown>
+): void {
+  for (const [modelId, rawProfile] of Object.entries(profiles)) {
+    const trimmed = modelId.trim()
+    if (!trimmed) continue
+    const aliases = objectValue(rawProfile).aliases
+    if (!Array.isArray(aliases)) continue
+    const ids = target.get(trimmed) ?? []
+    for (const alias of aliases) {
+      if (typeof alias !== 'string') continue
+      const trimmedAlias = alias.trim()
+      if (trimmedAlias) ids.push(trimmedAlias)
+    }
+    target.set(trimmed, ids)
+  }
 }
 
 function mergeModelIds(ids: readonly string[]): string[] {

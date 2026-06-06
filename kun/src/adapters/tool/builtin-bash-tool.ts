@@ -9,6 +9,7 @@ import { DEFAULT_BASH_TIMEOUT_SECONDS } from './builtin-tool-types.js'
 import {
   describeKind,
   normalizePositiveInteger,
+  shellCommandArgs,
   shellRuntimeInfo,
   terminateSpawnTree,
   waitForSpawnExit,
@@ -91,15 +92,13 @@ async function bashExecute(
   let resultShell = shellRuntime.name
   const child = execOperation
     ? null
-    : (() => {
-        return spawn(shellRuntime.shell, [...shellRuntime.args, command], {
-          cwd,
-          env: process.env,
-          detached: process.platform !== 'win32',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true
-        })
-      })()
+    : spawn(shellRuntime.shell, shellCommandArgs(shellRuntime, command), {
+        cwd,
+        env: process.env,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
+      })
   let timedOut = false
   let settled = false
   const output = new OutputAccumulator({
@@ -394,7 +393,7 @@ async function startBashSession(
 ): Promise<{ payload: BashPayload; isError?: boolean }> {
   await mkdir(input.cwd, { recursive: true })
   const shellRuntime = shellRuntimeInfo()
-  const child = spawn(shellRuntime.shell, [...shellRuntime.args, input.command], {
+  const child = spawn(shellRuntime.shell, shellCommandArgs(shellRuntime, input.command), {
     cwd: input.cwd,
     env: process.env,
     detached: process.platform !== 'win32',

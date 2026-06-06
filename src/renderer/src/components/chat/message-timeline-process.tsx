@@ -1,10 +1,13 @@
-import type { ReactElement, RefObject } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactElement, RefObject } from 'react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, ChevronRight, Minimize2 } from 'lucide-react'
 import type { ChatBlock, ToolBlock } from '../../agent/types'
 import { looksLikeUnifiedDiff } from '../../lib/diff-stats'
 import { useDeferredRender } from '../../hooks/use-deferred-render'
+import { openWorkspacePathInEditor } from '../../lib/open-workspace-path'
+import { previewWorkspaceFile } from '../../lib/workspace-file-preview'
+import { useChatStore } from '../../store/chat-store'
 import { DiffView } from '../DiffView'
 import { AssistantMarkdown } from './AssistantMarkdown'
 import { MessageBubble } from './message-timeline-bubbles'
@@ -112,7 +115,7 @@ export function ProcessSectionRow({
       (block.kind === 'approval' && block.status === 'error') ||
       (block.kind === 'user_input' && block.status === 'error')
   )
-  const defaultExpanded = false
+  const defaultExpanded = active || hasError
   const expanded = hasDetails && (userExpanded ?? defaultExpanded)
   const title = describeProcessSection(section, t, {
     processing,
@@ -258,34 +261,46 @@ function ProcessStackRows({
         const summary = describeProcessBlock(block, t)
         const detail = getProcessDetail(block, summary)
         const isRunningTool = processBlockIsRunningTool(block, processing)
-        const canExpand = detail.kind !== 'none' && !isRunningTool
-        const open = canExpand && openBlockId === block.id
+        const canExpand = detail.kind !== 'none'
+        const open = canExpand && (isRunningTool || processBlockHasError(block) || openBlockId === block.id)
         const rowActive = processBlockIsActive(block, processing)
         const isError = processBlockHasError(block)
+        const canToggle = canExpand && !isRunningTool
+        const handleToggle = (): void => {
+          if (!canToggle) return
+          setOpenBlockId((id) => (id === block.id ? null : block.id))
+        }
+        const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+          if (!canToggle) return
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          event.preventDefault()
+          handleToggle()
+        }
 
         return (
           <div key={block.id} className="min-w-0">
-            <button
-              type="button"
-              disabled={!canExpand}
-              onClick={canExpand ? () => setOpenBlockId((id) => (id === block.id ? null : block.id)) : undefined}
+            <div
+              role={canToggle ? 'button' : undefined}
+              tabIndex={canToggle ? 0 : undefined}
+              onClick={handleToggle}
+              onKeyDown={handleKeyDown}
               className={`group flex w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[13.5px] leading-6 transition ${
                 isError
                   ? 'text-red-600 dark:text-red-300'
                   : 'text-ds-faint hover:text-ds-muted'
-              } ${canExpand ? 'cursor-pointer hover:bg-ds-hover/45' : 'cursor-default'}`}
+              } ${canToggle ? 'cursor-pointer hover:bg-ds-hover/45' : 'cursor-default'}`}
             >
               <span className={`min-w-0 flex-1 truncate ${rowActive && !isError ? 'ds-shiny-text' : ''}`}>
-                {summary}
+                <ProcessSummaryText block={block} summary={summary} />
               </span>
-              {canExpand ? (
+              {canExpand && !isRunningTool ? (
                 open ? (
                   <ChevronDown className="h-3 w-3 shrink-0 opacity-35" strokeWidth={2} />
                 ) : (
                   <ChevronRight className="h-3 w-3 shrink-0 opacity-0 transition group-hover:opacity-35" strokeWidth={2} />
                 )
               ) : null}
-            </button>
+            </div>
             {open ? (
               detail.kind === 'assistant' ? (
                 <div className="ml-1 mt-1">
@@ -324,20 +339,30 @@ function ProcessEntryRow({
   const isError = processBlockHasError(block)
   const open =
     canExpand &&
-    !isRunningTool &&
-    (isAssistantProcessText || isAutoOpenPending || isStreamingAssistant || userOpen)
+    (isRunningTool || isError || isAssistantProcessText || isAutoOpenPending || isStreamingAssistant || userOpen)
 
   const { verb, rest } = splitVerb(summary)
   const rowActive = isRunningTool || isAutoOpenPending || isStreamingAssistant
   const wrapSummary = (block.kind === 'system' && !canExpand) || isAssistantProcessText
   const canToggle = canExpand && !isRunningTool && !isAutoOpenPending && !isAssistantProcessText
+  const handleToggle = (): void => {
+    if (!canToggle) return
+    setUserOpen((v) => !v)
+  }
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (!canToggle) return
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    handleToggle()
+  }
 
   return (
     <div className="flex flex-col">
-      <button
-        type="button"
-        onClick={canToggle ? () => setUserOpen((v) => !v) : undefined}
-        disabled={!canExpand}
+      <div
+        role={canToggle ? 'button' : undefined}
+        tabIndex={canToggle ? 0 : undefined}
+        onClick={handleToggle}
+        onKeyDown={handleKeyDown}
         className={`group flex w-full items-start gap-2 rounded-md px-2 py-1 text-left text-[13.5px] leading-[1.55] transition ${
           isError
             ? 'text-red-600 dark:text-red-300'
@@ -363,7 +388,7 @@ function ProcessEntryRow({
           </span>
           {rest ? (
             <span className="ml-1.5 font-mono text-[13px]">
-              {rest}
+              <ProcessSummaryText block={block} summary={rest} />
             </span>
           ) : null}
         </span>
@@ -374,7 +399,7 @@ function ProcessEntryRow({
             <ChevronRight className="mt-1 h-3 w-3 shrink-0 opacity-0 transition group-hover:opacity-45" strokeWidth={2} />
           )
         ) : null}
-      </button>
+      </div>
       <RuntimeMetaBadges block={block} t={t} />
       {canExpand && open ? (
         detail.kind === 'assistant' ? (
@@ -483,6 +508,86 @@ function splitVerb(summary: string): { verb: string; rest: string } {
   const space = trimmed.search(/\s/)
   if (space < 0) return { verb: trimmed, rest: '' }
   return { verb: trimmed.slice(0, space), rest: trimmed.slice(space + 1).trim() }
+}
+
+function toolFilePath(block: ToolBlock): string | undefined {
+  const sourceText = [block.summary, block.detail ?? ''].filter(Boolean).join('\n')
+  return (
+    block.filePath ||
+    extractQuotedField(sourceText, 'path') ||
+    extractQuotedField(sourceText, 'file_path') ||
+    extractQuotedField(sourceText, 'file')
+  )
+}
+
+function ProcessFileReference({
+  path,
+  children
+}: {
+  path: string
+  children: string
+}): ReactElement {
+  const { t } = useTranslation('common')
+  const workspaceRoot = useChatStore((s) => s.workspaceRoot)
+
+  const stopRowToggle = (event: ReactMouseEvent<HTMLElement>): void => {
+    event.stopPropagation()
+  }
+
+  const preview = (event: ReactMouseEvent<HTMLButtonElement>): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    previewWorkspaceFile({ path, workspaceRoot })
+  }
+
+  const openInEditor = (event: ReactMouseEvent<HTMLButtonElement>): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    void openWorkspacePathInEditor({ path }, workspaceRoot).then((result) => {
+      if (!result.ok) {
+        void window.dsGui?.logError?.('editor-open', 'Failed to open process file reference', {
+          message: result.message,
+          target: { path, workspaceRoot }
+        })?.catch(() => undefined)
+      }
+    })
+  }
+
+  return (
+    <button
+      type="button"
+      className="ds-process-file-reference"
+      title={t('processFileReferenceHint')}
+      onClick={preview}
+      onDoubleClick={openInEditor}
+      onMouseDown={stopRowToggle}
+    >
+      {children}
+    </button>
+  )
+}
+
+function ProcessSummaryText({
+  block,
+  summary
+}: {
+  block: ChatBlock
+  summary: string
+}): ReactElement {
+  if (block.kind !== 'tool') return <>{summary}</>
+  const path = toolFilePath(block)
+  if (!path) return <>{summary}</>
+  const index = summary.indexOf(path)
+  if (index < 0) return <>{summary}</>
+  const before = summary.slice(0, index)
+  const after = summary.slice(index + path.length)
+  return (
+    <>
+      {before}
+      <ProcessFileReference path={path}>{path}</ProcessFileReference>
+      {after}
+    </>
+  )
 }
 
 type ProcessDetail =
@@ -662,11 +767,7 @@ export function summarizeToolBlock(
   const toolName = extractToolName(rawSummary) || metaToolName || ''
   const label = builtInToolLabel(toolName, t) || humanizeToolName(toolName) || formatToolTitle(block, t)
   const sourceText = [rawSummary, block.detail ?? ''].filter(Boolean).join('\n')
-  const filePath =
-    block.filePath ||
-    extractQuotedField(sourceText, 'path') ||
-    extractQuotedField(sourceText, 'file_path') ||
-    extractQuotedField(sourceText, 'file')
+  const filePath = toolFilePath(block)
   const pattern =
     extractQuotedField(sourceText, 'pattern') ||
     extractQuotedField(sourceText, 'query') ||

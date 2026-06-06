@@ -1423,6 +1423,7 @@ export function Workbench(): ReactElement {
             <ScheduleTasksView
               leftSidebarCollapsed={leftSidebarCollapsed}
               onToggleLeftSidebar={toggleLeftSidebar}
+              onOpenThread={openThread}
             />
           </Suspense>
         ) : route === 'write' ? (

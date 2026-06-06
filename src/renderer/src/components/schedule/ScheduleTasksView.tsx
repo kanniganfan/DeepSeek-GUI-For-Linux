@@ -4,9 +4,12 @@ import { useTranslation } from 'react-i18next'
 import {
   Brain,
   CalendarClock,
+  ChevronDown,
+  ChevronUp,
   Clock3,
   Folder,
   FolderOpen,
+  MessageSquare,
   MoreHorizontal,
   PencilLine,
   Play,
@@ -37,6 +40,7 @@ import { ScheduleDefaultsDialog } from './ScheduleDefaultsDialog'
 type Props = {
   leftSidebarCollapsed: boolean
   onToggleLeftSidebar: () => void
+  onOpenThread?: (threadId: string) => void
 }
 
 type TaskFilter = 'all' | 'enabled' | 'running' | 'done'
@@ -50,6 +54,8 @@ const SCHEDULE_REASONING_OPTIONS: ScheduleReasoningEffort[] = ['off', 'low', 'me
 const EMPTY_SCHEDULE_TASKS: ScheduledTaskV1[] = []
 const TIME_HOURS = Array.from({ length: 24 }, (_item, index) => String(index).padStart(2, '0'))
 const TIME_MINUTES = Array.from({ length: 60 }, (_item, index) => String(index).padStart(2, '0'))
+const RESULT_PREVIEW_CHAR_THRESHOLD = 360
+const RESULT_PREVIEW_LINE_THRESHOLD = 5
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -171,6 +177,17 @@ export function filterScheduledTasks(tasks: ScheduledTaskV1[], filter: TaskFilte
   })
 }
 
+export function scheduledTaskLastThreadId(task: Pick<ScheduledTaskV1, 'lastThreadId'>): string {
+  return task.lastThreadId.trim()
+}
+
+export function scheduledTaskResultIsExpandable(message: string): boolean {
+  const trimmed = message.trim()
+  if (!trimmed) return false
+  return trimmed.length > RESULT_PREVIEW_CHAR_THRESHOLD ||
+    trimmed.split(/\r?\n/u).length > RESULT_PREVIEW_LINE_THRESHOLD
+}
+
 function formatDateTime(value: string, fallback: string): string {
   if (!value.trim()) return fallback
   const date = new Date(value)
@@ -187,7 +204,8 @@ function statusTone(status: ScheduledTaskV1['lastStatus']): string {
 
 export function ScheduleTasksView({
   leftSidebarCollapsed,
-  onToggleLeftSidebar
+  onToggleLeftSidebar,
+  onOpenThread
 }: Props): ReactElement {
   const { t } = useTranslation('common')
   const [settings, setSettings] = useState<AppSettingsV1 | null>(null)
@@ -198,6 +216,7 @@ export function ScheduleTasksView({
   const [dialog, setDialog] = useState<TaskDialogState | null>(null)
   const [dialogError, setDialogError] = useState<string | null>(null)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
+  const [expandedResultTaskIds, setExpandedResultTaskIds] = useState<Set<string>>(() => new Set())
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -355,6 +374,18 @@ export function ScheduleTasksView({
     await persistSchedule({ keepAwake: value })
   }
 
+  const toggleResultPreview = (taskId: string): void => {
+    setExpandedResultTaskIds((current) => {
+      const next = new Set(current)
+      if (next.has(taskId)) {
+        next.delete(taskId)
+      } else {
+        next.add(taskId)
+      }
+      return next
+    })
+  }
+
   return (
     <div className="ds-drag flex h-full min-h-0 flex-col bg-ds-main">
       <div className="ds-stage-inset shrink-0">
@@ -451,6 +482,7 @@ export function ScheduleTasksView({
             <div className="flex flex-col gap-3">
               {visibleTasks.map((task) => {
                 const running = runningTaskIds.has(task.id) || task.lastStatus === 'running'
+                const lastThreadId = scheduledTaskLastThreadId(task)
                 return (
                   <div
                     key={task.id}
@@ -469,10 +501,22 @@ export function ScheduleTasksView({
                         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-ds-faint">
                           <span>{scheduleTaskSummary(task, t)}</span>
                           <span>{t('scheduleNextRun')}: {formatDateTime(task.nextRunAt, t('scheduleNotScheduled'))}</span>
+                          <span>{t('scheduleLastRun')}: {formatDateTime(task.lastRunAt, t('scheduleNeverRun'))}</span>
                           <span>{task.model} · {scheduleReasoningLabel(task.reasoningEffort, t)}</span>
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
+                        {lastThreadId ? (
+                          <button
+                            type="button"
+                            onClick={() => onOpenThread?.(lastThreadId)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink"
+                            title={t('scheduleOpenLastThread')}
+                            aria-label={t('scheduleOpenLastThread')}
+                          >
+                            <MessageSquare className="h-4 w-4" strokeWidth={1.8} />
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           onClick={() => void runTask(task.id)}
@@ -515,9 +559,41 @@ export function ScheduleTasksView({
                       </div>
                     </div>
                     {task.lastMessage ? (
-                      <p className="mt-3 line-clamp-2 text-[12px] leading-5 text-ds-muted">
-                        {task.lastMessage}
-                      </p>
+                      <div className="mt-3 rounded-lg border border-ds-border-muted bg-ds-main/45 px-3 py-2.5">
+                        <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2">
+                          <span className="min-w-0 truncate text-[12px] font-semibold text-ds-faint">
+                            {task.lastStatus === 'error'
+                              ? t('scheduleLastError')
+                              : task.lastStatus === 'running'
+                                ? t('scheduleCurrentStatus')
+                                : t('scheduleLastResult')}
+                          </span>
+                          {scheduledTaskResultIsExpandable(task.lastMessage) ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleResultPreview(task.id)}
+                              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink"
+                              aria-expanded={expandedResultTaskIds.has(task.id)}
+                            >
+                              {expandedResultTaskIds.has(task.id) ? (
+                                <ChevronUp className="h-3.5 w-3.5" strokeWidth={1.8} />
+                              ) : (
+                                <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.8} />
+                              )}
+                              {expandedResultTaskIds.has(task.id) ? t('scheduleCollapseResult') : t('scheduleExpandResult')}
+                            </button>
+                          ) : null}
+                        </div>
+                        <div
+                          className={`whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-ds-muted ${
+                            expandedResultTaskIds.has(task.id)
+                              ? 'max-h-80 overflow-y-auto pr-1'
+                              : 'line-clamp-5 overflow-hidden'
+                          }`}
+                        >
+                          {task.lastMessage}
+                        </div>
+                      </div>
                     ) : null}
                   </div>
                 )
