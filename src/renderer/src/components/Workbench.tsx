@@ -19,7 +19,7 @@ import {
 import { Sidebar } from './chat/Sidebar'
 import { WorkbenchTopBar, type RightPanelMode } from './chat/WorkbenchTopBar'
 import { MessageTimeline } from './chat/MessageTimeline'
-import { FloatingComposer } from './chat/FloatingComposer'
+import { FloatingComposer, type ComposerFileReference } from './chat/FloatingComposer'
 import {
   composerReasoningEffortRequestValue,
   type ComposerReasoningEffort
@@ -55,6 +55,11 @@ import { useWorkbenchPlanController } from './workbench-plan-controller'
 import { prepareImageAttachmentUpload } from '../lib/image-attachment-upload'
 import { isChatAttachmentUploadEnabled } from '../lib/attachment-upload-availability'
 import { normalizeWorkspaceRoot } from '../lib/workspace-path'
+import {
+  buildComposerFileContextPrompt,
+  mergeComposerFileReferences,
+  type ComposerFileContextEntry
+} from '../lib/composer-file-references'
 
 const ChangeInspector = lazy(() =>
   import('./ChangeInspector').then((module) => ({ default: module.ChangeInspector }))
@@ -86,8 +91,25 @@ type PendingSddPlanTarget = {
   workspaceRoot: string
 }
 
+const COMPOSER_FILE_CONTEXT_MAX_CHARS_PER_FILE = 60_000
+const COMPOSER_FILE_CONTEXT_MAX_TOTAL_CHARS = 180_000
+
 function fileNameFromPath(path: string): string {
   return path.replaceAll('\\', '/').split('/').filter(Boolean).pop() || 'image'
+}
+
+function clipComposerFileContext(
+  content: string,
+  remainingChars: number,
+  sourceTruncated: boolean
+): { content: string; truncated: boolean; consumed: number } {
+  const limit = Math.max(0, Math.min(COMPOSER_FILE_CONTEXT_MAX_CHARS_PER_FILE, remainingChars))
+  const clipped = content.slice(0, limit)
+  return {
+    content: clipped,
+    truncated: sourceTruncated || clipped.length < content.length,
+    consumed: clipped.length
+  }
 }
 
 function sddDraftPlanRelativePath(draft: SddDraft): string {
@@ -279,6 +301,7 @@ export function Workbench(): ReactElement {
   const [runtimeInfo, setRuntimeInfo] = useState<CoreRuntimeInfoJson | null>(null)
   const [runtimeSkills, setRuntimeSkills] = useState<CoreRuntimeSkillJson[]>([])
   const [composerAttachments, setComposerAttachments] = useState<AttachmentReference[]>([])
+  const [composerFileReferences, setComposerFileReferences] = useState<ComposerFileReference[]>([])
   const [attachmentUploadBusy, setAttachmentUploadBusy] = useState(false)
   const [attachmentUploadError, setAttachmentUploadError] = useState<string | null>(null)
   const [connectPhoneSidebarOpen, setConnectPhoneSidebarOpen] = useState(false)
@@ -519,6 +542,27 @@ export function Workbench(): ReactElement {
   const clearComposerAttachments = (): void => {
     setComposerAttachments([])
   }
+
+  const clearComposerFileReferences = (): void => {
+    setComposerFileReferences([])
+  }
+
+  const addComposerFileReference = (reference: ComposerFileReference): void => {
+    setComposerFileReferences((current) => mergeComposerFileReferences(current, reference))
+  }
+
+  const removeComposerFileReference = (relativePath: string): void => {
+    const key = relativePath.trim().replaceAll('\\', '/').replace(/\/+/g, '/').toLowerCase()
+    setComposerFileReferences((current) =>
+      current.filter((reference) =>
+        reference.relativePath.trim().replaceAll('\\', '/').replace(/\/+/g, '/').toLowerCase() !== key
+      )
+    )
+  }
+
+  useEffect(() => {
+    if (route !== 'chat') setComposerFileReferences([])
+  }, [route])
 
   const handlePickAttachments = async (files: File[]): Promise<void> => {
     if (!files.length || !attachmentUploadEnabled) return
@@ -874,14 +918,87 @@ export function Workbench(): ReactElement {
     }
   }
 
+  const readComposerFileContextEntries = async (
+    references: ComposerFileReference[],
+    workspace: string
+  ): Promise<ComposerFileContextEntry[]> => {
+    const entries: ComposerFileContextEntry[] = []
+    let remainingChars = COMPOSER_FILE_CONTEXT_MAX_TOTAL_CHARS
+    for (const reference of references) {
+      if (remainingChars <= 0) break
+      const result = await window.dsGui.readWorkspaceFile({
+        workspaceRoot: workspace,
+        path: reference.relativePath || reference.path
+      })
+      if (!result.ok) {
+        throw new Error(t('composerFileReadFailed', {
+          path: reference.relativePath,
+          message: result.message
+        }))
+      }
+      const clipped = clipComposerFileContext(result.content, remainingChars, result.truncated)
+      remainingChars -= clipped.consumed
+      entries.push({
+        relativePath: reference.relativePath,
+        content: clipped.content,
+        ...(clipped.truncated ? { truncated: true } : {})
+      })
+    }
+    return entries
+  }
+
   const handleSend = (): void => {
+    void handleSendAsync()
+  }
+
+  const handleSendAsync = async (): Promise<void> => {
     const v = input.trim()
     const attachments = route === 'chat' ? composerAttachments : []
     const attachmentIds = attachments.map((attachment) => attachment.id)
+    const fileReferences = route === 'chat' ? composerFileReferences : []
     const reasoningEffort = composerReasoningEffortRequestValue(composerReasoningEffort)
-    if (!v && attachmentIds.length === 0) return
-    const messageText = v || t('composerImageOnlyPrompt')
-    const imageOnlyDisplayText = v ? undefined : t('composerImageOnlyDisplay')
+    if (!v && attachmentIds.length === 0 && fileReferences.length === 0) return
+    const emptyPrompt =
+      fileReferences.length > 0 && attachmentIds.length > 0
+        ? t('composerFileAndImageOnlyPrompt')
+        : fileReferences.length > 0
+          ? t('composerFileOnlyPrompt')
+          : t('composerImageOnlyPrompt')
+    const emptyDisplayText = v
+      ? undefined
+      : fileReferences.length > 0 && attachmentIds.length > 0
+        ? t('composerFileAndImageOnlyDisplay', { count: fileReferences.length })
+        : fileReferences.length > 0
+          ? t('composerFileOnlyDisplay', { count: fileReferences.length })
+          : t('composerImageOnlyDisplay')
+    const messageText = v || emptyPrompt
+    const prepareChatMessage = async (): Promise<{ text: string; displayText?: string } | null> => {
+      if (fileReferences.length === 0) {
+        return {
+          text: messageText,
+          ...(emptyDisplayText ? { displayText: emptyDisplayText } : {})
+        }
+      }
+      const workspace = normalizeWorkspaceRoot(
+        threads.find((thread) => thread.id === activeThreadId)?.workspace || workspaceRoot
+      )
+      if (!workspace) {
+        setError(t('workspaceRequiredToCreateThread'))
+        return null
+      }
+      try {
+        const fileContext = await readComposerFileContextEntries(fileReferences, workspace)
+        const displayText = v || emptyDisplayText
+        return {
+          text: buildComposerFileContextPrompt(messageText, fileContext),
+          ...(displayText ? { displayText } : {})
+        }
+      } catch (error) {
+        setError(error instanceof Error ? error.message : String(error))
+        return null
+      }
+    }
+
     if (activeSddDraft && rightPanelMode === 'sdd-ai') {
       void sendSddAssistantPrompt(v)
       return
@@ -893,10 +1010,13 @@ export function Workbench(): ReactElement {
       return
     }
     if (route === 'chat' && mode === 'plan') {
+      const prepared = await prepareChatMessage()
+      if (!prepared) return
       setInput('')
       clearComposerAttachments()
-      void sendPlanTurn(messageText, {
-        ...(imageOnlyDisplayText ? { displayText: imageOnlyDisplayText } : {}),
+      clearComposerFileReferences()
+      void sendPlanTurn(prepared.text, {
+        ...(prepared.displayText ? { displayText: prepared.displayText } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(attachmentIds.length ? { attachmentIds, attachments } : {})
       })
@@ -995,10 +1115,13 @@ export function Workbench(): ReactElement {
       })()
       return
     }
+    const prepared = await prepareChatMessage()
+    if (!prepared) return
     setInput('')
     clearComposerAttachments()
-    void sendMessage(messageText, mode === 'plan' ? 'plan' : 'agent', {
-      ...(imageOnlyDisplayText ? { displayText: imageOnlyDisplayText } : {}),
+    clearComposerFileReferences()
+    void sendMessage(prepared.text, mode === 'plan' ? 'plan' : 'agent', {
+      ...(prepared.displayText ? { displayText: prepared.displayText } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(attachmentIds.length ? { attachmentIds, attachments } : {})
     })
@@ -1421,11 +1544,15 @@ export function Workbench(): ReactElement {
                 attachmentUploadEnabled={attachmentUploadEnabled}
                 attachmentUploadBusy={attachmentUploadBusy}
                 attachmentUploadError={attachmentUploadError}
+                fileReferenceEnabled={route === 'chat' && !activeSddDraft}
+                fileReferences={composerFileReferences}
                 webAccessAvailable={webAccessAvailable}
                 skillCommands={runtimeSkills}
                 onPickAttachments={(files) => void handlePickAttachments(files)}
                 onPasteClipboardImage={(options) => void handlePasteClipboardImage(options)}
                 onRemoveAttachment={removeComposerAttachment}
+                onAddFileReference={addComposerFileReference}
+                onRemoveFileReference={removeComposerFileReference}
                 queuedMessages={queuedMessages}
                 onRemoveQueuedMessage={removeQueuedMessage}
                 onInterrupt={(options) => void interrupt(options)}

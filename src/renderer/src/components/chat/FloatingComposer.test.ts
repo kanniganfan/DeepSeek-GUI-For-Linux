@@ -17,6 +17,14 @@ import {
 } from './FloatingComposerModelPicker'
 import { getGoalPanelDraftObjective } from './floating-composer-commands'
 import { useChatStore } from '../../store/chat-store'
+import {
+  buildComposerFileContextPrompt,
+  filterWorkspaceFileMentionSuggestions,
+  formatComposerFileMentionToken,
+  getFileMentionAtCursor,
+  removeComposerFileMentionToken,
+  replaceFileMentionInInput
+} from '../../lib/composer-file-references'
 
 describe('FloatingComposer slash commands', () => {
   it('parses compact command aliases', () => {
@@ -78,6 +86,53 @@ describe('FloatingComposer goal helpers', () => {
     expect(formatGoalElapsedSeconds(60)).toBe('1m')
     expect(formatGoalElapsedSeconds(125)).toBe('2m 5s')
     expect(formatGoalElapsedSeconds(3720)).toBe('1h 2m')
+  })
+})
+
+describe('FloatingComposer file references', () => {
+  it('parses @ file mention queries at the current cursor', () => {
+    expect(getFileMentionAtCursor('please inspect @src/ren', 'please inspect @src/ren'.length)).toEqual({
+      start: 15,
+      end: 23,
+      query: 'src/ren',
+      quoted: false
+    })
+    expect(getFileMentionAtCursor('compare @"docs/product plan', 'compare @"docs/product plan'.length)).toEqual({
+      start: 8,
+      end: 27,
+      query: 'docs/product plan',
+      quoted: true
+    })
+    expect(getFileMentionAtCursor('email test@example.com', 'email test@example.com'.length)).toBeNull()
+  })
+
+  it('formats, inserts, removes, and ranks composer file references', () => {
+    const files = [
+      { path: '/repo/src/App.tsx', relativePath: 'src/App.tsx', name: 'App.tsx' },
+      { path: '/repo/package.json', relativePath: 'package.json', name: 'package.json' },
+      { path: '/repo/docs/product plan.md', relativePath: 'docs/product plan.md', name: 'product plan.md' }
+    ]
+
+    expect(formatComposerFileMentionToken('docs/product plan.md')).toBe('@"docs/product plan.md"')
+    expect(filterWorkspaceFileMentionSuggestions(files, 'pack')).toEqual([files[1]])
+
+    const mention = getFileMentionAtCursor('open @doc', 'open @doc'.length)
+    expect(mention).not.toBeNull()
+    const replaced = replaceFileMentionInInput('open @doc', mention!, files[2])
+    expect(replaced.input).toBe('open @"docs/product plan.md" ')
+    expect(removeComposerFileMentionToken(replaced.input, files[2].relativePath)).toBe('open')
+  })
+
+  it('builds a compact prompt from referenced workspace files', () => {
+    const prompt = buildComposerFileContextPrompt('summarize this', [{
+      relativePath: 'src/App.tsx',
+      content: 'export function App() {}',
+      truncated: true
+    }])
+
+    expect(prompt).toContain('<workspace_file path="src/App.tsx" truncated="true">')
+    expect(prompt).toContain('export function App() {}')
+    expect(prompt).toContain('User request:\nsummarize this')
   })
 })
 
@@ -550,5 +605,40 @@ describe('FloatingComposer capability controls', () => {
 
     expect(html).toContain('src="blob:shot-preview"')
     expect(html).toContain('alt="shot.png"')
+  })
+
+  it('renders @ file reference chips as sendable context', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposer, {
+        input: '',
+        setInput: () => undefined,
+        mode: 'agent',
+        setMode: () => undefined,
+        busy: false,
+        runtimeReady: true,
+        hasActiveThread: true,
+        composerModel: '',
+        composerPickList: [],
+        onComposerModelChange: () => undefined,
+        queuedMessages: [],
+        onRemoveQueuedMessage: () => undefined,
+        onSend: () => undefined,
+        onInterrupt: () => undefined,
+        fileReferenceEnabled: true,
+        fileReferences: [{
+          path: '/workspace/deepseek-gui/src/App.tsx',
+          relativePath: 'src/App.tsx',
+          name: 'App.tsx'
+        }],
+        onRemoveFileReference: () => undefined,
+        attachmentUploadEnabled: false,
+        webAccessAvailable: false
+      })
+    )
+
+    expect(html).toContain('src/App.tsx')
+    expect(html).toContain('Remove file reference')
+    expect(html).toContain('aria-label="Send"')
+    expect(html).not.toContain('aria-label="Send" disabled=""')
   })
 })

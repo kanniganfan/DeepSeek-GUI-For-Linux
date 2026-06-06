@@ -12,6 +12,7 @@ import {
 import {
   Archive,
   BarChart3,
+  FileText,
   GitFork,
   ImagePlus,
   ListTodo,
@@ -33,9 +34,20 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { ModelProviderModelGroup } from '@shared/ds-gui-api'
+import type { WorkspaceEntry } from '@shared/workspace-file'
 import type { AttachmentReference, ReviewTarget } from '../../agent/types'
 import { useChatStore } from '../../store/chat-store'
 import { normalizeWorkspaceRoot } from '../../lib/workspace-path'
+import {
+  filterWorkspaceFileMentionSuggestions,
+  formatComposerFileMentionToken,
+  getFileMentionAtCursor,
+  relativeWorkspacePath,
+  removeComposerFileMentionToken,
+  replaceFileMentionInInput,
+  type ComposerFileMention,
+  type ComposerFileReference
+} from '../../lib/composer-file-references'
 import {
   COMPACT_COMMAND_ALIASES,
   getGoalPanelDraftObjective,
@@ -66,6 +78,8 @@ import {
 } from './FloatingComposerQueuedMessages'
 import { useComposerDraft } from './use-composer-draft'
 
+export type { ComposerFileReference } from '../../lib/composer-file-references'
+
 type Props = {
   variant?: 'default' | 'compact'
   workspaceRootOverride?: string
@@ -90,6 +104,8 @@ type Props = {
   attachmentUploadEnabled?: boolean
   attachmentUploadBusy?: boolean
   attachmentUploadError?: string | null
+  fileReferenceEnabled?: boolean
+  fileReferences?: ComposerFileReference[]
   webAccessAvailable?: boolean
   skillCommands?: Array<{
     id: string
@@ -107,6 +123,8 @@ type Props = {
   onPickAttachments?: (files: File[]) => void
   onPasteClipboardImage?: (options?: { silentNoImage?: boolean }) => void | Promise<void>
   onRemoveAttachment?: (id: string) => void
+  onAddFileReference?: (reference: ComposerFileReference) => void
+  onRemoveFileReference?: (relativePath: string) => void
   onSend: () => void
   onInterrupt: (options?: { discard?: boolean }) => void
   onPlanCommand?: () => void
@@ -126,6 +144,11 @@ type ComposerTransferItem = {
   kind?: string
   type?: string
   getAsFile?: () => File | null
+}
+
+type WorkspaceFileIndexRecord = {
+  files: ComposerFileReference[]
+  loadedAt: number
 }
 
 export type ComposerImageTransferSource = {
@@ -186,6 +209,158 @@ function normalizedImageFile(file: File, mimeTypeHint?: string): File | null {
     type: mimeType,
     lastModified: file.lastModified
   })
+}
+
+const FILE_MENTION_MAX_DEPTH = 6
+const FILE_MENTION_MAX_DIRECTORIES = 140
+const FILE_MENTION_MAX_FILES = 1200
+const FILE_MENTION_CACHE_TTL_MS = 30_000
+const FILE_MENTION_IGNORED_DIRS = new Set([
+  '.git',
+  '.hg',
+  '.svn',
+  '.next',
+  '.turbo',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'out'
+])
+const FILE_MENTION_TEXT_EXTENSIONS = new Set([
+  '.astro',
+  '.bash',
+  '.c',
+  '.cc',
+  '.cjs',
+  '.cpp',
+  '.cs',
+  '.css',
+  '.csv',
+  '.dart',
+  '.env',
+  '.fish',
+  '.go',
+  '.h',
+  '.hpp',
+  '.html',
+  '.ini',
+  '.java',
+  '.js',
+  '.json',
+  '.jsx',
+  '.kt',
+  '.less',
+  '.lock',
+  '.log',
+  '.md',
+  '.mdx',
+  '.mjs',
+  '.php',
+  '.py',
+  '.rb',
+  '.rs',
+  '.sass',
+  '.scss',
+  '.sh',
+  '.sql',
+  '.svelte',
+  '.swift',
+  '.toml',
+  '.ts',
+  '.tsx',
+  '.txt',
+  '.vue',
+  '.xml',
+  '.yaml',
+  '.yml',
+  '.zsh'
+])
+const FILE_MENTION_TEXT_NAMES = new Set([
+  '.env',
+  '.gitignore',
+  'dockerfile',
+  'makefile',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'readme'
+])
+const workspaceFileIndexCache = new Map<string, WorkspaceFileIndexRecord | Promise<WorkspaceFileIndexRecord>>()
+
+function isMentionableWorkspaceFile(entry: WorkspaceEntry): boolean {
+  if (entry.type !== 'file') return false
+  const name = entry.name.toLowerCase()
+  if (FILE_MENTION_TEXT_NAMES.has(name)) return true
+  if (!entry.ext) return false
+  return FILE_MENTION_TEXT_EXTENSIONS.has(entry.ext.toLowerCase())
+}
+
+function fileReferenceFromEntry(entry: WorkspaceEntry, workspaceRoot: string): ComposerFileReference {
+  const relativePath = relativeWorkspacePath(entry.path, workspaceRoot)
+  return {
+    path: entry.path,
+    relativePath,
+    name: entry.name
+  }
+}
+
+async function loadWorkspaceFileIndex(workspaceRoot: string): Promise<WorkspaceFileIndexRecord> {
+  const root = workspaceRoot.trim()
+  const cached = workspaceFileIndexCache.get(root)
+  const now = Date.now()
+  if (cached && !(cached instanceof Promise) && now - cached.loadedAt < FILE_MENTION_CACHE_TTL_MS) {
+    return cached
+  }
+  if (cached instanceof Promise) return cached
+
+  const task = (async (): Promise<WorkspaceFileIndexRecord> => {
+    const files: ComposerFileReference[] = []
+    const queue: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }]
+    let visitedDirectories = 0
+
+    while (
+      queue.length > 0 &&
+      visitedDirectories < FILE_MENTION_MAX_DIRECTORIES &&
+      files.length < FILE_MENTION_MAX_FILES
+    ) {
+      const current = queue.shift()
+      if (!current) break
+      visitedDirectories += 1
+      const result = await window.dsGui.listWorkspaceDirectory({
+        workspaceRoot: root,
+        path: current.path
+      })
+      if (!result.ok) continue
+
+      for (const entry of result.entries) {
+        if (entry.type === 'directory') {
+          if (
+            current.depth < FILE_MENTION_MAX_DEPTH &&
+            !FILE_MENTION_IGNORED_DIRS.has(entry.name.toLowerCase())
+          ) {
+            queue.push({ path: entry.path, depth: current.depth + 1 })
+          }
+          continue
+        }
+        if (isMentionableWorkspaceFile(entry)) {
+          files.push(fileReferenceFromEntry(entry, root))
+          if (files.length >= FILE_MENTION_MAX_FILES) break
+        }
+      }
+    }
+
+    return { files, loadedAt: Date.now() }
+  })()
+
+  workspaceFileIndexCache.set(root, task)
+  try {
+    const result = await task
+    workspaceFileIndexCache.set(root, result)
+    return result
+  } catch (error) {
+    workspaceFileIndexCache.delete(root)
+    throw error
+  }
 }
 
 export function imageFilesFromTransfer(source: ComposerImageTransferSource | null | undefined): File[] {
@@ -259,10 +434,14 @@ export function FloatingComposer({
   attachmentUploadEnabled = false,
   attachmentUploadBusy = false,
   attachmentUploadError = null,
+  fileReferenceEnabled = false,
+  fileReferences = [],
   skillCommands = [],
   onPickAttachments,
   onPasteClipboardImage,
   onRemoveAttachment,
+  onAddFileReference,
+  onRemoveFileReference,
   onSend,
   onInterrupt,
   onPlanCommand,
@@ -326,7 +505,8 @@ export function FloatingComposer({
   const canChangeModel = canCompose && !busy
   const canSend = canCompose && (
     input.trim().length > 0 ||
-    (attachmentUploadEnabled && attachments.length > 0)
+    (attachmentUploadEnabled && attachments.length > 0) ||
+    (fileReferenceEnabled && fileReferences.length > 0)
   )
   const canPickAttachment = canCompose && attachmentUploadEnabled && !attachmentUploadBusy
   const showIntentToolbar = !compact && route === 'chat'
@@ -340,7 +520,12 @@ export function FloatingComposer({
     compact && modelPickerMode === 'combobox' && !showToolbarStartControls && !hideModelPicker
   const draft = useComposerDraft({ input, canCompose })
   const slashQuery = getSlashQuery(input)
+  const [composerCursor, setComposerCursor] = useState(() => input.length)
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0)
+  const [fileMentionSuggestions, setFileMentionSuggestions] = useState<ComposerFileReference[]>([])
+  const [fileMentionLoading, setFileMentionLoading] = useState(false)
+  const [selectedFileMentionIndex, setSelectedFileMentionIndex] = useState(0)
+  const [dismissedFileMentionKey, setDismissedFileMentionKey] = useState<string | null>(null)
   const [composerMenuOpen, setComposerMenuOpen] = useState(false)
   const [goalPanelOpen, setGoalPanelOpen] = useState(false)
   const [goalRuntimeNowMs, setGoalRuntimeNowMs] = useState(() => Date.now())
@@ -527,6 +712,23 @@ export function FloatingComposer({
     filteredSlashCommands.length > 0
       ? filteredSlashCommands[Math.min(selectedCommandIndex, filteredSlashCommands.length - 1)]
       : null
+  const activeFileMention = useMemo<ComposerFileMention | null>(() => {
+    if (!fileReferenceEnabled || slashQuery != null || !effectiveWorkspaceRoot) return null
+    return getFileMentionAtCursor(input, composerCursor)
+  }, [composerCursor, effectiveWorkspaceRoot, fileReferenceEnabled, input, slashQuery])
+  const activeFileMentionKey = activeFileMention
+    ? `${activeFileMention.start}:${activeFileMention.query}:${activeFileMention.quoted ? 'q' : 'p'}`
+    : null
+  const showFileMentionMenu =
+    canCompose &&
+    Boolean(activeFileMention) &&
+    activeFileMentionKey !== dismissedFileMentionKey &&
+    !composerMenuOpen &&
+    !goalPanelOpen
+  const highlightedFileMention =
+    fileMentionSuggestions.length > 0
+      ? fileMentionSuggestions[Math.min(selectedFileMentionIndex, fileMentionSuggestions.length - 1)]
+      : null
   const parsedGoalCommand = parseGoalCommand(input)
   const goalPanelDraftObjective = getGoalPanelDraftObjective(input, goalPanelOpen)
   const canSetGoalPanelDraft =
@@ -566,8 +768,43 @@ export function FloatingComposer({
   }, [slashQuery])
 
   useEffect(() => {
+    setSelectedFileMentionIndex(0)
+  }, [activeFileMentionKey])
+
+  useEffect(() => {
     if (slashQuery != null || goalPanelOpen) setComposerMenuOpen(false)
   }, [goalPanelOpen, slashQuery])
+
+  useEffect(() => {
+    if (!showFileMentionMenu || !activeFileMention || !effectiveWorkspaceRoot) {
+      setFileMentionSuggestions([])
+      setFileMentionLoading(false)
+      return
+    }
+
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      setFileMentionLoading(true)
+      void loadWorkspaceFileIndex(effectiveWorkspaceRoot)
+        .then((index) => {
+          if (cancelled) return
+          setFileMentionSuggestions(
+            filterWorkspaceFileMentionSuggestions(index.files, activeFileMention.query, fileReferences)
+          )
+        })
+        .catch(() => {
+          if (!cancelled) setFileMentionSuggestions([])
+        })
+        .finally(() => {
+          if (!cancelled) setFileMentionLoading(false)
+        })
+    }, 80)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [activeFileMention, effectiveWorkspaceRoot, fileReferences, showFileMentionMenu])
 
   useEffect(() => {
     if (!composerMenuOpen && !goalPanelOpen) return
@@ -746,6 +983,36 @@ export function FloatingComposer({
     draft.focusComposer()
   }
 
+  const syncComposerCursor = (element = draft.textareaRef.current): void => {
+    if (!element) return
+    setComposerCursor(element.selectionStart ?? input.length)
+  }
+
+  const applyFileMention = (reference: ComposerFileReference | null): void => {
+    if (!reference || !activeFileMention) return
+    const next = replaceFileMentionInInput(input, activeFileMention, reference)
+    setInput(next.input)
+    onAddFileReference?.(reference)
+    setDismissedFileMentionKey(null)
+    window.requestAnimationFrame(() => {
+      const textarea = draft.textareaRef.current
+      if (!textarea) return
+      textarea.focus()
+      textarea.setSelectionRange(next.cursor, next.cursor)
+      setComposerCursor(next.cursor)
+    })
+  }
+
+  const removeFileReference = (relativePath: string): void => {
+    onRemoveFileReference?.(relativePath)
+    const nextInput = removeComposerFileMentionToken(input, relativePath)
+    if (nextInput !== input) {
+      setInput(nextInput)
+      window.requestAnimationFrame(() => syncComposerCursor())
+    }
+    draft.focusComposer()
+  }
+
   const handlePrimaryAction = (): void => {
     if (highlightedSlashCommand) {
       if (highlightedSlashCommand.disabled) return
@@ -795,6 +1062,32 @@ export function FloatingComposer({
     const sendByEnter =
       event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey
     const composing = draft.isComposingEvent(event)
+
+    if (!composing && showFileMentionMenu) {
+      if (event.key === 'ArrowDown' && fileMentionSuggestions.length > 0) {
+        event.preventDefault()
+        setSelectedFileMentionIndex((current) => (current + 1) % fileMentionSuggestions.length)
+        return
+      }
+      if (event.key === 'ArrowUp' && fileMentionSuggestions.length > 0) {
+        event.preventDefault()
+        setSelectedFileMentionIndex((current) =>
+          current === 0 ? fileMentionSuggestions.length - 1 : current - 1
+        )
+        return
+      }
+      if ((event.key === 'Enter' || event.key === 'Tab') && highlightedFileMention) {
+        event.preventDefault()
+        applyFileMention(highlightedFileMention)
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setDismissedFileMentionKey(activeFileMentionKey)
+        setFileMentionSuggestions([])
+        return
+      }
+    }
 
     if (!composing && slashQuery != null) {
       if (event.key === 'ArrowDown' && filteredSlashCommands.length > 0) {
@@ -1046,6 +1339,61 @@ export function FloatingComposer({
           </div>
         ) : null}
 
+        {showFileMentionMenu ? (
+          <div className="ds-card-strong absolute bottom-full left-1/2 z-30 mb-2 w-[calc(100%_-_1rem)] max-w-[680px] -translate-x-1/2 overflow-hidden rounded-[16px] p-1.5 shadow-[0_18px_46px_rgba(15,23,42,0.14)]">
+            <div className="flex h-7 items-center gap-2 px-2.5 text-[11.5px] font-semibold text-ds-muted">
+              <FileText className="h-3.5 w-3.5 text-ds-faint" strokeWidth={1.9} />
+              <span>{t('composerFileMentionMenuTitle')}</span>
+              {fileMentionLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-ds-faint" strokeWidth={1.9} />
+              ) : null}
+            </div>
+            {fileMentionSuggestions.length > 0 ? (
+              <div className="flex max-h-[min(280px,calc(100vh-260px))] flex-col gap-0.5 overflow-y-auto pr-1">
+                {fileMentionSuggestions.map((reference) => {
+                  const active = highlightedFileMention?.relativePath === reference.relativePath
+                  return (
+                    <button
+                      key={reference.relativePath}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applyFileMention(reference)}
+                      className={`flex min-h-[46px] w-full items-center gap-2.5 rounded-[12px] px-2.5 py-2 text-left transition ${
+                        active
+                          ? 'bg-ds-hover text-ds-ink shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)]'
+                          : 'text-ds-muted hover:bg-ds-hover hover:text-ds-ink'
+                      }`}
+                    >
+                      <span
+                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] ${
+                          active ? 'bg-white text-accent shadow-sm dark:bg-ds-card' : 'bg-ds-hover text-ds-muted'
+                        }`}
+                      >
+                        <FileText className="h-4 w-4" strokeWidth={1.8} />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13.5px] font-semibold leading-5 text-inherit">
+                          {reference.name}
+                        </span>
+                        <span className="mt-0.5 block truncate text-[12px] leading-4 text-ds-faint">
+                          {reference.relativePath}
+                        </span>
+                      </span>
+                      <span className="hidden max-w-[170px] shrink-0 truncate rounded-full border border-ds-border-muted px-2 py-0.5 text-[10.5px] font-semibold leading-4 text-ds-faint sm:block">
+                        {formatComposerFileMentionToken(reference.relativePath)}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="rounded-[12px] border border-dashed border-ds-border-muted px-3 py-3 text-[12px] text-ds-faint">
+                {fileMentionLoading ? t('composerFileMentionLoading') : t('composerFileMentionEmpty')}
+              </div>
+            )}
+          </div>
+        ) : null}
+
         {goalPanelOpen && slashQuery == null ? (
           <div
             ref={goalPanelRef}
@@ -1149,13 +1497,43 @@ export function FloatingComposer({
             placeholder={placeholder}
             value={input}
             disabled={!canCompose}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value)
+              setComposerCursor(e.target.selectionStart ?? e.target.value.length)
+              setDismissedFileMentionKey(null)
+            }}
+            onSelect={(e) => syncComposerCursor(e.currentTarget)}
             onFocus={draft.onFocus}
             onBlur={draft.onBlur}
             onCompositionStart={draft.onCompositionStart}
             onCompositionEnd={draft.onCompositionEnd}
             onKeyDown={handleComposerKeyDown}
           />
+          {fileReferences.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-2 px-1">
+              {fileReferences.map((reference) => (
+                <span
+                  key={reference.relativePath}
+                  className="ds-no-drag inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg border border-ds-border-muted bg-ds-card/80 px-2 text-[12px] font-medium text-ds-muted"
+                  title={reference.relativePath}
+                >
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
+                  <span className="max-w-52 truncate">{reference.relativePath}</span>
+                  {onRemoveFileReference ? (
+                    <button
+                      type="button"
+                      onClick={() => removeFileReference(reference.relativePath)}
+                      className="rounded-full p-0.5 text-ds-faint transition hover:bg-ds-hover hover:text-ds-ink"
+                      aria-label={t('composerRemoveFileReference')}
+                      title={t('composerRemoveFileReference')}
+                    >
+                      <X className="h-3 w-3" strokeWidth={2} />
+                    </button>
+                  ) : null}
+                </span>
+              ))}
+            </div>
+          ) : null}
           {attachments.length > 0 || attachmentUploadError ? (
             <div className="flex flex-wrap items-center gap-2 px-1">
               {attachments.map((attachment) => (
