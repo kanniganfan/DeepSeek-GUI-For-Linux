@@ -147,9 +147,9 @@ module.exports = {
     icon: './src/asset/img/deepseek.png',
     maintainer: 'KANNI <noreply@users.noreply.github.com>',
     target: [
-      { target: 'AppImage', arch: ['x64'] },
-      { target: 'deb', arch: ['x64'] },
-      { target: 'rpm', arch: ['x64'] }
+      { target: 'AppImage', arch: ['x64', 'arm64'] },
+      { target: 'deb', arch: ['x64', 'arm64'] },
+      { target: 'rpm', arch: ['x64', 'arm64'] }
     ]
   },
   extraMetadata: {
