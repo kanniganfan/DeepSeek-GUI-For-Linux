@@ -145,7 +145,12 @@ module.exports = {
   linux: {
     category: 'Development',
     icon: './src/asset/img/deepseek.png',
-    target: [{ target: 'AppImage', arch: ['x64'] }]
+    maintainer: 'KANNI <noreply@users.noreply.github.com>',
+    target: [
+      { target: 'AppImage', arch: ['x64'] },
+      { target: 'deb', arch: ['x64'] },
+      { target: 'rpm', arch: ['x64'] }
+    ]
   },
   extraMetadata: {
     ...(releaseAppVersion ? { version: releaseAppVersion } : {}),
