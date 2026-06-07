@@ -10,8 +10,8 @@
 
 [Website](https://deepseek-gui.com) | [Download](https://deepseek-gui.com)
 
-[![GitHub release](https://img.shields.io/github/v/release/XingYu-Zhong/DeepSeek-GUI?label=github)](https://github.com/XingYu-Zhong/DeepSeek-GUI/releases)
-[![License](https://img.shields.io/github/license/XingYu-Zhong/DeepSeek-GUI)](./LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/kanniganfan/DeepSeek-GUI-For-Linux?label=github)](https://github.com/kanniganfan/DeepSeek-GUI-For-Linux/releases)
+[![License](https://img.shields.io/github/license/kanniganfan/DeepSeek-GUI-For-Linux)](./LICENSE)
 
 DeepSeek GUI is a local desktop workbench for developers and frequent AI users. It uses Kun as the only runtime and turns the terminal agent experience into an easier, longer-lived app: choose a workspace, start a task, watch reasoning and tool calls stream in, review file changes, and approve sensitive actions when needed.
 
@@ -237,7 +237,7 @@ Background automation and IM integration, so Kun can keep handling phone message
 
 ### Download a Pre-built Package
 
-Download the latest build from [GitHub Releases](https://github.com/XingYu-Zhong/DeepSeek-GUI/releases):
+Download the latest build from [GitHub Releases](https://github.com/kanniganfan/DeepSeek-GUI-For-Linux/releases):
 
 | Platform | Package |
 | --- | --- |
@@ -252,7 +252,7 @@ On first launch, enter your [DeepSeek API key](https://platform.deepseek.com/api
 For contributors and local development:
 
 ```bash
-git clone https://github.com/XingYu-Zhong/DeepSeek-GUI.git
+git clone https://github.com/kanniganfan/DeepSeek-GUI-For-Linux.git
 cd DeepSeek-GUI
 npm install
 npm run dev
@@ -366,7 +366,7 @@ Kun data lives under `~/.deepseekgui/kun` or the configured Kun data dir. Check 
 
 ## Updates
 
-- For regular users: check GUI updates in Settings or download the latest installer from [GitHub Releases](https://github.com/XingYu-Zhong/DeepSeek-GUI/releases).
+- For regular users: check GUI updates in Settings or download the latest installer from [GitHub Releases](https://github.com/kanniganfan/DeepSeek-GUI-For-Linux/releases).
 
 ## Contributing
 
@@ -435,4 +435,4 @@ We are also grateful to:
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=XingYu-Zhong/DeepSeek-GUI&type=date&legend=top-left)](https://www.star-history.com/?repos=XingYu-Zhong%2FDeepSeek-GUI&type=date&logscale=&legend=top-left)
+[![Star History Chart](https://api.star-history.com/chart?repos=kanniganfan/DeepSeek-GUI-For-Linux&type=date&legend=top-left)](https://www.star-history.com/?repos=XingYu-Zhong%2FDeepSeek-GUI&type=date&logscale=&legend=top-left)

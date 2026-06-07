@@ -10,8 +10,8 @@
 
 [官网](https://deepseek-gui.com) | [下载](https://deepseek-gui.com)
 
-[![GitHub release](https://img.shields.io/github/v/release/XingYu-Zhong/DeepSeek-GUI?label=github)](https://github.com/XingYu-Zhong/DeepSeek-GUI/releases)
-[![License](https://img.shields.io/github/license/XingYu-Zhong/DeepSeek-GUI)](./LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/kanniganfan/DeepSeek-GUI-For-Linux?label=github)](https://github.com/kanniganfan/DeepSeek-GUI-For-Linux/releases)
+[![License](https://img.shields.io/github/license/kanniganfan/DeepSeek-GUI-For-Linux)](./LICENSE)
 
 DeepSeek GUI 是一个面向开发者和高频 AI 工作者的本地桌面工作台。它以 Kun 为唯一运行时，把终端里的智能体体验整理成更容易上手、更适合长期使用的应用：选择工作目录，发起任务，实时查看推理、工具调用和文件改动，并在需要时审批或回退。
 
@@ -220,7 +220,7 @@ Kun 运行时与设置，但会话、工作区和界面布局彼此独立，可�
 
 ### 下载预构建安装包
 
-前往 [GitHub Releases](https://github.com/XingYu-Zhong/DeepSeek-GUI/releases) 下载最新版本：
+前往 [GitHub Releases](https://github.com/kanniganfan/DeepSeek-GUI-For-Linux/releases) 下载最新版本：
 
 | 平台 | 安装包 |
 | --- | --- |
@@ -235,7 +235,7 @@ Kun 运行时与设置，但会话、工作区和界面布局彼此独立，可�
 适合贡献者或需要本地开发的人：
 
 ```bash
-git clone https://github.com/XingYu-Zhong/DeepSeek-GUI.git
+git clone https://github.com/kanniganfan/DeepSeek-GUI-For-Linux.git
 cd DeepSeek-GUI
 npm install
 npm run dev
@@ -349,7 +349,7 @@ Kun 数据默认位于 `~/.deepseekgui/kun` 或应用数据目录下的 Kun data
 
 ## 更新
 
-- 普通用户：可在设置页检查 GUI 更新，或前往 [GitHub Releases](https://github.com/XingYu-Zhong/DeepSeek-GUI/releases) 下载最新安装包。
+- 普通用户：可在设置页检查 GUI 更新，或前往 [GitHub Releases](https://github.com/kanniganfan/DeepSeek-GUI-For-Linux/releases) 下载最新安装包。
 
 ## 贡献指南
 
@@ -418,4 +418,4 @@ Kun 的设计站在先行项目的肩膀上：
 
 ## Star 历史
 
-[![Star History Chart](https://api.star-history.com/chart?repos=XingYu-Zhong/DeepSeek-GUI&type=date&legend=top-left)](https://www.star-history.com/?repos=XingYu-Zhong%2FDeepSeek-GUI&type=date&logscale=&legend=top-left)
+[![Star History Chart](https://api.star-history.com/chart?repos=kanniganfan/DeepSeek-GUI-For-Linux&type=date&legend=top-left)](https://www.star-history.com/?repos=XingYu-Zhong%2FDeepSeek-GUI&type=date&logscale=&legend=top-left)
